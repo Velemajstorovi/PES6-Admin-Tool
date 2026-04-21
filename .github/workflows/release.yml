@@ -1,0 +1,47 @@
+name: Build and attach release artifact
+
+# Fires when a maintainer publishes a release via the GitHub UI.
+# The release (with its tag, title, and notes) is authored in the web UI;
+# this workflow builds pes6_admin_tool.xlsx from the tagged source and
+# attaches it to the release page as a downloadable asset.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write  # required to upload release assets
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build admin workbook
+        run: python scripts/build_admin.py
+
+      - name: Rename artifact with tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          mv "outputs/pes6_admin_tool.xlsx" "outputs/pes6_admin_tool-${TAG}.xlsx"
+
+      - name: Attach xlsx to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          gh release upload "$TAG" \
+            "outputs/pes6_admin_tool-${TAG}.xlsx" \
+            --repo "${{ github.repository }}" \
+            --clobber

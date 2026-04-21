@@ -55,6 +55,24 @@ file fails fast with a message listing the mismatched sheets/columns. If the
 patch format legitimately changed, update `SHEET_SPECS` (and
 `EXPECTED_CVS_HEADERS`) in `scripts/verify_source.py`.
 
+## Cutting a release
+
+The built workbook is distributed as a GitHub release asset - no local build
+required. To ship a new version (after a patch update, rule change, etc.):
+
+1. Open the repo on GitHub, go to **Releases**, click **Draft a new release**.
+2. In the "Choose a tag" dropdown, type a new tag name (convention:
+   `phoenix-YYYY.N`, e.g. `phoenix-2026.2`) and select *"Create new tag on
+   publish"*.
+3. Set the title (e.g., *"PES6 Admin Tool - Phoenix 2026 v2"*) and write
+   release notes in the markdown editor.
+4. Click **Publish release**.
+
+A GitHub Actions workflow (`.github/workflows/release.yml`) then builds
+`pes6_admin_tool.xlsx` from the tagged source, renames it to
+`pes6_admin_tool-<tag>.xlsx`, and attaches it to the release page within a
+few minutes. Download the xlsx from the release to distribute to managers.
+
 ## Tier-list comparison
 
 There's no dedicated script for this yet. When you want to diff a human tier
