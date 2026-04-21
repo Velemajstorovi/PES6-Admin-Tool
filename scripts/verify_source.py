@@ -26,7 +26,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS_DIR.parent
 
 # Actual column headers of source.xlsx's "1. Paste cvs" sheet, as produced by
-# PES Fan Editor. build_admin_v2.py reads this sheet positionally and copies
+# PES Fan Editor. build_admin.py reads this sheet positionally and copies
 # values into the output workbook's "CSV Paste" sheet — so any change to the
 # order or count of columns here breaks downstream formulas.
 #
@@ -59,36 +59,11 @@ EXPECTED_CVS_HEADERS = [
     'CLASSIC NUMBER', 'CLUB TEAM', 'CLUB NUMBER',
 ]
 
-# Columns required on the Calc sheet (ridge-regression training data in
-# pes6_tracker_build.py). Order doesn't matter — only presence.
-_ATTR_COLS = [
-    'ATTACK', 'DEFENSE', 'BALANCE', 'STAMINA', 'TOP SPEED', 'ACCELERATION',
-    'RESPONSE', 'AGILITY', 'DRIBBLE ACCURACY', 'DRIBBLE SPEED',
-    'SHORT PASS ACCURACY', 'SHORT PASS SPEED', 'LONG PASS ACCURACY',
-    'LONG PASS SPEED', 'SHOT ACCURACY', 'SHOT POWER', 'SHOT TECHNIQUE',
-    'FREE KICK ACCURACY', 'SWERVE', 'HEADING', 'JUMP', 'TECHNIQUE',
-    'AGGRESSION', 'MENTALITY', 'GOAL KEEPING', 'TEAM WORK',
-]
-_B1_COLS = [
-    'GK B1', 'CB/CWP B1', 'SB B1', 'WB B1', 'DMF B1', 'CMF B1',
-    'SMF B1', 'AMF B1', 'WF B1', 'SS B1', 'CF B1',
-]
-
 SHEET_SPECS = {
     '1. Paste cvs': {
         'positional': True,
         'columns': EXPECTED_CVS_HEADERS,
-        'used_by': 'build_admin_v2.py - rows are copied into the CSV Paste sheet by column position, so the order must match exactly.',
-    },
-    'Calc': {
-        'positional': False,
-        'columns': ['Name', 'OVR'] + _B1_COLS + _ATTR_COLS,
-        'used_by': 'pes6_tracker_build.py - ridge regression trains on these columns to recover the per-position B1 formula.',
-    },
-    '3. Paste (Value Only)': {
-        'positional': False,
-        'columns': ['Name', 'OVR', 'Club', 'P'] + _ATTR_COLS,
-        'used_by': 'pes6_tracker_build.py - B1 predictions are computed for every row in this sheet.',
+        'used_by': 'build_admin.py - rows are copied into the CSV Paste sheet by column position, so the order must match exactly.',
     },
 }
 

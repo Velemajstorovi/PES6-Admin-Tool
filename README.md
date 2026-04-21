@@ -17,7 +17,6 @@ onto the "CSV Paste" sheet and everything recalculates.
 ├── scripts/
 │   ├── admin_tool_builder.py # shared config + formula builders (library)
 │   ├── build_admin.py        # single-pass builder for the admin workbook
-│   ├── pes6_tracker_build.py # standalone over-performer tracker (ridge)
 │   └── verify_source.py      # schema guardrail for data/source.xlsx
 ├── outputs/                  # generated workbooks (gitignored)
 ├── requirements.txt
@@ -41,14 +40,6 @@ Nations, Team Composition - is driven by live Excel formulas, so re-pasting a
 new CSV on the "CSV Paste" sheet refreshes all downstream views. Press F9 in
 Excel / LibreOffice if auto-recalculation is disabled.
 
-## Regenerating the over-performer tracker
-
-```bash
-python scripts/pes6_tracker_build.py data/source.xlsx outputs/tracker.xlsx
-```
-
-Optional: `--owned-teams owned.txt` to exclude a custom roster list.
-
 ## Source file guardrail
 
 `data/source.xlsx` must match the schema the scripts expect. Before running any
@@ -59,10 +50,10 @@ python scripts/verify_source.py                 # checks data/source.xlsx
 python scripts/verify_source.py other_patch.xlsx
 ```
 
-`build_admin.py` and `pes6_tracker_build.py` call `verify_source()` on
-startup, so a structurally-different file fails fast with a message listing the
-mismatched sheets/columns. If the patch format legitimately changed, update
-`SHEET_SPECS` (and `EXPECTED_CVS_HEADERS`) in `scripts/verify_source.py`.
+`build_admin.py` calls `verify_source()` on startup, so a structurally-different
+file fails fast with a message listing the mismatched sheets/columns. If the
+patch format legitimately changed, update `SHEET_SPECS` (and
+`EXPECTED_CVS_HEADERS`) in `scripts/verify_source.py`.
 
 ## Tier-list comparison
 
