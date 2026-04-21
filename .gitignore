@@ -1,0 +1,20 @@
+# Generated workbooks — rebuild from scripts against data/source.xlsx.
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code session state
+.claude/
