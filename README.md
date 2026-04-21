@@ -19,9 +19,6 @@ onto the "CSV Paste" sheet and everything recalculates.
 │   ├── build_admin.py        # single-pass builder for the admin workbook
 │   ├── pes6_tracker_build.py # standalone over-performer tracker (ridge)
 │   └── verify_source.py      # schema guardrail for data/source.xlsx
-├── prompts/
-│   ├── REUSABLE_PROMPT.md
-│   └── REUSABLE_TIER_COMPARISON_PROMPT.md
 ├── outputs/                  # generated workbooks (gitignored)
 ├── requirements.txt
 └── .gitignore
@@ -62,13 +59,33 @@ python scripts/verify_source.py                 # checks data/source.xlsx
 python scripts/verify_source.py other_patch.xlsx
 ```
 
-`build_admin_v2.py` and `pes6_tracker_build.py` call `verify_source()` on
+`build_admin.py` and `pes6_tracker_build.py` call `verify_source()` on
 startup, so a structurally-different file fails fast with a message listing the
 mismatched sheets/columns. If the patch format legitimately changed, update
 `SHEET_SPECS` (and `EXPECTED_CVS_HEADERS`) in `scripts/verify_source.py`.
 
-## Reusable prompts
+## Tier-list comparison
 
-`prompts/REUSABLE_PROMPT.md` - regenerate the draft tracker on a new patch.
-`prompts/REUSABLE_TIER_COMPARISON_PROMPT.md` - compare a human tier list vs a
-data-driven one.
+There's no dedicated script for this yet. When you want to diff a human tier
+list against a data-driven one (as was done for Phoenix 2026), either build a
+`scripts/pes6_tier_comparison.py` or ask Claude Code to run the comparison
+directly against `data/source.xlsx`. Methodology notes worth preserving:
+
+- **Primary metric:** top-16 average OVR per club (starting XI + 5 rotation).
+  Secondary validation metric: top-16 best-B1.
+- **Tiers:** BANNED, A, B, C, D, E, F. Prefer natural gaps in the OVR
+  distribution as boundaries; BANNED threshold is typically top-16 OVR
+  `>= 89.0`.
+- **BANNED caveat:** human lists often include "star-power bans" (Messi,
+  Ronaldo, one-star super-clubs) that don't show up in depth-based data
+  tiers. Flag these as a legitimate difference, not an error.
+- **Comparison outputs:** full side-by-side, mismatches-only, major
+  disagreements (`>= 2` tier diff), and accuracy headline (exact-match %,
+  within-1-tier %, within-2-tier %).
+- **Name-matching quirks:** patch Excel often has mojibake (`Bayern
+  M�nchen` -> `Bayern München`, `Atl�tico` -> `Atlético`,
+  `D�sseldorf` -> `Düsseldorf`). Short-name aliases used by community
+  lists: `Leverkusen` = Bayer Leverkusen, `Inter` = Internazionale,
+  `Bayern` = Bayern München, `Sociedad` = Real Sociedad, `PSG` = Paris
+  Saint-Germain, `United`/`City` = Manchester United / City, `Dortmund` =
+  Borussia Dortmund, `Atletico Madrid` = Atlético de Madrid.
