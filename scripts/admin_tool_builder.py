@@ -49,9 +49,13 @@ CSV_HEADERS = [
 ]
 MAX_PLAYERS = 6000  # safe upper bound (Phoenix 2026 has 4,783)
 
-# Players-sheet column layout (76 columns)
+# Players-sheet column layout (77 columns)
+# 'Effective Club' follows 'Club' - equals Club unless overridden by an entry
+# in the Player Changes sheet AND the Apply Changes toggle is YES. Clubs and
+# Team Composition sheets group by Effective Club so the applied roster is
+# reflected downstream.
 PLAYER_COLS = [
-    'Name','Nationality','Club','Age','Foot','Registered Pos','OVR','Class',
+    'Name','Nationality','Club','Effective Club','Age','Foot','Registered Pos','OVR','Class',
     # Raw attributes (26)
     'ATTACK','DEFENSE','BALANCE','STAMINA','TOP SPEED','ACCELERATION','RESPONSE','AGILITY',
     'DRIBBLE ACC','DRIBBLE SPD','SHORT PASS ACC','SHORT PASS SPD','LONG PASS ACC','LONG PASS SPD',
@@ -350,3 +354,26 @@ def player_class(row):
             f"IF({o}>=90,\"A\","
             f"IF({o}>=84,\"B\","
             f"IF({o}>=78,\"C\",\"D\"))))")
+
+
+def effective_club_formula(row, log_first=7, log_last=206):
+    """Effective Club = override from Player Changes log if one exists AND
+    the Apply Changes toggle is YES; otherwise the original CSV Club.
+
+    Uses LOOKUP(2, 1/(cond), range) so the LAST matching row wins when a
+    player has multiple log entries (later changes supersede earlier ones).
+    Portable across Excel and LibreOffice (no CSE or _xlfn. prefix needed).
+    """
+    name = pref('Name', row)
+    club = pref('Club', row)
+    apply_ref = "'Player Changes'!$B$3"
+    log_player = f"'Player Changes'!$C${log_first}:$C${log_last}"
+    log_toclub = f"'Player Changes'!$E${log_first}:$E${log_last}"
+    lookup = (
+        f'IFERROR(LOOKUP(2,1/(({log_player}={name})*({log_toclub}<>"")),'
+        f'{log_toclub}),{club})'
+    )
+    return (
+        f'=IF({name}="","",'
+        f'IF({apply_ref}<>"YES",{club},{lookup}))'
+    )

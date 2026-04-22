@@ -35,8 +35,8 @@ from admin_tool_builder import (
     ABILITY_WEIGHTS, CSV_HEADERS, P, PLAYER_COLS, POSITIONS,
     ability_bonus, ability_count, attacking_prowess, b1, ball_winning,
     best_b1, best_position, cond_multiplier, defending_prowess,
-    effective_b1, explosive_power, finishing, kicking_power, ovr_formula,
-    player_class, pull_formula, speed,
+    effective_b1, effective_club_formula, explosive_power, finishing,
+    kicking_power, ovr_formula, player_class, pull_formula, speed,
 )
 from verify_source import verify_source
 
@@ -177,6 +177,13 @@ LOTTERY_WEIGHTS = {'A': 1, 'B': 2, 'C': 4, 'D': 8}
 # Blank rows to seed in Season Results for admin entry.
 SEASON_RESULTS_BLANK_ROWS = 200
 
+# Blank rows to seed in Player Changes log for admin entry.
+# Log data rows: 7 to 6 + PLAYER_CHANGES_LOG_ROWS. Must match the hardcoded
+# range in effective_club_formula() in admin_tool_builder.py.
+PLAYER_CHANGES_LOG_ROWS = 200
+PLAYER_CHANGES_LOG_FIRST = 7
+PLAYER_CHANGES_LOG_LAST = 6 + PLAYER_CHANGES_LOG_ROWS
+
 # Which CSV column of `1. Paste cvs` holds what.
 SRC_CLUB_COL = CSV_HEADERS.index('CLUB')          # 80 (0-indexed)
 SRC_NATION_COL = CSV_HEADERS.index('NATIONALITY') # 77
@@ -312,6 +319,7 @@ def build_readme(ws) -> None:
         ('10. Season Results', 'ADMIN DATA ENTRY: one row per manager per season with final placements.'),
         ('11. Tier Movement', 'Auto-computed: compares actual vs expected, outputs new tier for next draft.'),
         ('12. Draft Order', 'NBA-style lottery weights by new tier. Admin runs draw, fills Actual Pick.'),
+        ('13. Player Changes', 'ADMIN OVERRIDE: stage transfers / drafts / arrangements. Apply Changes toggle makes Clubs and Team Composition reflect the new rosters.'),
         ('', ''),
         ('TIER MOVEMENT LOGIC', 'h'),
         ('Bands', 'Outcome-based: Champion (top 3), Playoff (4-8), Mid-safe (middle), Playout (bottom 4).'),
@@ -436,6 +444,12 @@ def build_players(ws) -> None:
                 cell.value = effective_b1(row_idx)
             elif pcol_name == 'Class':
                 cell.value = player_class(row_idx)
+            elif pcol_name == 'Effective Club':
+                cell.value = effective_club_formula(
+                    row_idx,
+                    PLAYER_CHANGES_LOG_FIRST,
+                    PLAYER_CHANGES_LOG_LAST,
+                )
         if row_idx % 1000 == 0:
             print(f"  Players rows: {row_idx}/{ROWS + 1}")
 
@@ -453,10 +467,10 @@ def build_players(ws) -> None:
             ws[f"{col}{row}"].number_format = fmt
 
     col_widths = {
-        'Name': 22, 'Nationality': 14, 'Club': 22, 'Registered Pos': 10,
-        'OVR': 7, 'Class': 6, 'Best B1': 9, 'Effective B1': 10,
-        'Best Position': 11, 'Ability ★': 7, 'CONDITION': 9,
-        'Ability Bonus': 10, 'COND Multiplier': 10,
+        'Name': 22, 'Nationality': 14, 'Club': 22, 'Effective Club': 22,
+        'Registered Pos': 10, 'OVR': 7, 'Class': 6, 'Best B1': 9,
+        'Effective B1': 10, 'Best Position': 11, 'Ability ★': 7,
+        'CONDITION': 9, 'Ability Bonus': 10, 'COND Multiplier': 10,
     }
     for name, w in col_widths.items():
         ws.column_dimensions[P[name]].width = w
@@ -466,8 +480,9 @@ def build_clubs(ws, clubs: list[str]) -> None:
     ws['A1'] = 'CLUB RANKINGS - top-18 Effective B1, auto-refreshes from Players'
     ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
     ws.merge_cells('A1:K1')
-    ws['A2'] = ('All values are live Excel formulas. When a new CSV is pasted '
-                'on "CSV Paste", press F9 to recalculate.')
+    ws['A2'] = ('All values are live Excel formulas. Groups players by their '
+                'Effective Club (overridden via Player Changes when Apply '
+                'Changes is YES). Press F9 to recalculate after edits.')
     ws['A2'].font = Font(italic=True, color='808080')
 
     tier_legend_row(ws, 3)
@@ -478,7 +493,7 @@ def build_clubs(ws, clubs: list[str]) -> None:
         ws.cell(row=5, column=i, value=h)
     head_row(ws, 5, len(headers))
 
-    club_rng = players_range('Club')
+    club_rng = players_range('Effective Club')
     effb1_rng = players_range('Effective B1')
     ovr_rng = players_range('OVR')
     class_rng = players_range('Class')
@@ -568,7 +583,8 @@ def build_team_composition(ws, clubs: list[str]) -> None:
     ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
     ws.merge_cells('A1:L1')
     ws['A2'] = ("For admin use: audit draft picks, verify manager A-caps, "
-                "edit teams after draft.")
+                "edit teams after draft. Groups players by Effective Club "
+                "(reflects Player Changes when Apply Changes is YES).")
     ws['A2'].font = Font(italic=True, color='808080')
 
     headers = ['Rank', 'Club', 'Tier', 'Top-18 Eff B1', 'Total',
@@ -577,7 +593,7 @@ def build_team_composition(ws, clubs: list[str]) -> None:
         ws.cell(row=4, column=i, value=h)
     head_row(ws, 4, len(headers))
 
-    club_rng = players_range('Club')
+    club_rng = players_range('Effective Club')
     effb1_rng = players_range('Effective B1')
     class_rng = players_range('Class')
 
@@ -1180,6 +1196,123 @@ def build_draft_order(ws) -> None:
         ws.column_dimensions[get_column_letter(col)].width = w
 
 
+def build_player_changes(ws) -> None:
+    ws['A1'] = 'PLAYER CHANGES - transfers, drafts, arrangements'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:H1')
+    ws['A2'] = (
+        "Admin tool for staging player movement between seasons. Entries "
+        "here override the Players sheet's Club column (used by Clubs and "
+        "Team Composition) ONLY when Apply Changes is YES. Toggle OFF to "
+        "preview original rosters; toggle ON to see post-change squads. "
+        "Player names must match Players sheet exactly."
+    )
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:H2')
+
+    # --- Apply Changes toggle (B3) ---
+    lbl = ws.cell(row=3, column=1, value='Apply Changes:')
+    lbl.font = Font(bold=True)
+    lbl.alignment = Alignment(horizontal='right', vertical='center')
+
+    toggle = ws.cell(row=3, column=2, value='NO')
+    toggle.alignment = CENTER
+    toggle.font = Font(bold=True)
+    toggle.fill = PatternFill('solid', start_color='FFE699')
+
+    apply_dv = DataValidation(type='list', formula1='"YES,NO"', allow_blank=False)
+    ws.add_data_validation(apply_dv)
+    apply_dv.add('B3:B3')
+
+    hint = ws.cell(
+        row=3, column=3,
+        value='Set to YES to override team squads based on the change log below.'
+    )
+    hint.font = Font(italic=True, color='808080')
+    ws.merge_cells('C3:H3')
+
+    # --- Change Log section ---
+    section = ws.cell(row=5, column=1, value='CHANGE LOG')
+    section.font = Font(bold=True, size=12, color='1F4E78')
+    section.fill = PatternFill('solid', start_color='DDEBF7')
+    ws.merge_cells('A5:H5')
+
+    log_headers = ['Season', 'Type', 'Player', 'From Club', 'To Club', 'Notes']
+    for i, h in enumerate(log_headers, 1):
+        ws.cell(row=6, column=i, value=h)
+    head_row(ws, 6, len(log_headers))
+
+    log_first = PLAYER_CHANGES_LOG_FIRST
+    log_last = PLAYER_CHANGES_LOG_LAST
+
+    type_dv = DataValidation(
+        type='list',
+        formula1='"Transfer,Draft-In,Draft-Out,Arrangement"',
+        allow_blank=True,
+    )
+    ws.add_data_validation(type_dv)
+    type_dv.add(f'B{log_first}:B{log_last}')
+
+    ws.auto_filter.ref = f"A6:{get_column_letter(len(log_headers))}{log_last}"
+
+    # --- Per-club summary ---
+    sum_head_row = log_last + 2
+    sum_cols_row = sum_head_row + 1
+    sum_first = sum_cols_row + 1
+    sum_last = sum_first + len(MANAGERS) - 1
+
+    sh = ws.cell(row=sum_head_row, column=1, value='PER-CLUB SUMMARY')
+    sh.font = Font(bold=True, size=12, color='1F4E78')
+    sh.fill = PatternFill('solid', start_color='DDEBF7')
+    ws.merge_cells(start_row=sum_head_row, start_column=1,
+                   end_row=sum_head_row, end_column=8)
+
+    sum_headers = ['Manager', 'Club', 'Transfers In', 'Transfers Out',
+                   'Drafts In', 'Drafts Out', 'Arrangements', 'Net']
+    for i, h in enumerate(sum_headers, 1):
+        ws.cell(row=sum_cols_row, column=i, value=h)
+    head_row(ws, sum_cols_row, len(sum_headers))
+
+    log_type_rng = f'$B${log_first}:$B${log_last}'
+    log_from_rng = f'$D${log_first}:$D${log_last}'
+    log_to_rng = f'$E${log_first}:$E${log_last}'
+
+    for idx, (name, team, league, _tier) in enumerate(MANAGERS):
+        row = sum_first + idx
+        ws.cell(row=row, column=1, value=name).alignment = LEFT
+        club_cell = ws.cell(row=row, column=2, value=team)
+        club_cell.alignment = LEFT
+        club_cell.font = Font(bold=True)
+        club_cell.fill = PatternFill('solid', start_color='FFF2CC')
+
+        club_ref = f'B{row}'
+
+        ws.cell(row=row, column=3, value=(
+            f'=COUNTIFS({log_type_rng},"Transfer",{log_to_rng},{club_ref})'
+        )).alignment = CENTER
+        ws.cell(row=row, column=4, value=(
+            f'=COUNTIFS({log_type_rng},"Transfer",{log_from_rng},{club_ref})'
+        )).alignment = CENTER
+        ws.cell(row=row, column=5, value=(
+            f'=COUNTIFS({log_type_rng},"Draft-In",{log_to_rng},{club_ref})'
+        )).alignment = CENTER
+        ws.cell(row=row, column=6, value=(
+            f'=COUNTIFS({log_type_rng},"Draft-Out",{log_from_rng},{club_ref})'
+        )).alignment = CENTER
+        ws.cell(row=row, column=7, value=(
+            f'=COUNTIFS({log_type_rng},"Arrangement",{log_to_rng},{club_ref})+'
+            f'COUNTIFS({log_type_rng},"Arrangement",{log_from_rng},{club_ref})'
+        )).alignment = CENTER
+        ws.cell(row=row, column=8, value=(
+            f'=(C{row}+E{row})-(D{row}+F{row})'
+        )).alignment = CENTER
+
+    ws.freeze_panes = 'A7'
+    widths = [10, 16, 24, 22, 22, 30, 14, 10]
+    for col, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -1254,6 +1387,9 @@ def main() -> int:
 
     print("Building Draft Order...")
     build_draft_order(wb.create_sheet('Draft Order'))
+
+    print("Building Player Changes...")
+    build_player_changes(wb.create_sheet('Player Changes'))
 
     print(f"Saving {OUT}...")
     wb.save(OUT)
