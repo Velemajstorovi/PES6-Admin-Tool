@@ -25,6 +25,7 @@ from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS_DIR.parent
@@ -72,17 +73,85 @@ TIER_TEXT = {
     'D': 'FFFFFF', 'E': 'FFFFFF', 'F': 'FFFFFF',
 }
 
-# Clubs currently owned by managers in the league. Highlighted across sheets.
-OWNED_TEAMS = {
+# ---------------------------------------------------------------------------
+# MANAGER ROSTER / COMPETITIONS / TIER RULES
+# ---------------------------------------------------------------------------
+# Single source of truth for the draft league. Edit these lists and rebuild
+# when roster / competitions / rules change.
+
+# (manager_name, team, league [1 or 2], initial_tier [A/B/C/D])
+# Manager names are placeholders - replace with real names.
+MANAGERS: list[tuple[str, str, int, str]] = [
     # Liga 1 (13 managers)
-    'Aston Villa', 'Como', 'Crvena Zvezda', 'Crystal Palace', 'Fulham',
-    'Olympique Lyonnais', "Borussia M'gladbach", 'Fortuna D�sseldorf',
-    'Roma', 'Slavia Praha', 'Torino', 'Bochum', 'Villarreal',
+    ('M-L1-01', 'Aston Villa',          1, 'C'),
+    ('M-L1-02', 'Como',                 1, 'C'),
+    ('M-L1-03', 'Crvena Zvezda',        1, 'C'),
+    ('M-L1-04', 'Crystal Palace',       1, 'C'),
+    ('M-L1-05', 'Fulham',               1, 'C'),
+    ('M-L1-06', 'Olympique Lyonnais',   1, 'C'),
+    ('M-L1-07', "Borussia M'gladbach",  1, 'C'),
+    ('M-L1-08', 'Fortuna D�sseldorf', 1, 'C'),
+    ('M-L1-09', 'Roma',                 1, 'C'),
+    ('M-L1-10', 'Slavia Praha',         1, 'C'),
+    ('M-L1-11', 'Torino',               1, 'C'),
+    ('M-L1-12', 'Bochum',               1, 'C'),
+    ('M-L1-13', 'Villarreal',           1, 'C'),
     # Liga 2 (14 managers)
-    'Milan', 'Atalanta', 'Athletic', 'Bayer Leverkusen', 'Leipzig',
-    'Chelsea', 'Fenerbahce', 'Juventus', 'Napoli', 'Newcastle',
-    'Nottingham Forest', 'Olympique Marseille', 'Betis', 'Schalke',
-}
+    ('M-L2-01', 'Milan',                2, 'C'),
+    ('M-L2-02', 'Atalanta',             2, 'C'),
+    ('M-L2-03', 'Athletic',             2, 'C'),
+    ('M-L2-04', 'Bayer Leverkusen',     2, 'C'),
+    ('M-L2-05', 'Leipzig',              2, 'C'),
+    ('M-L2-06', 'Chelsea',              2, 'C'),
+    ('M-L2-07', 'Fenerbahce',           2, 'C'),
+    ('M-L2-08', 'Juventus',             2, 'C'),
+    ('M-L2-09', 'Napoli',               2, 'C'),
+    ('M-L2-10', 'Newcastle',            2, 'C'),
+    ('M-L2-11', 'Nottingham Forest',    2, 'C'),
+    ('M-L2-12', 'Olympique Marseille',  2, 'C'),
+    ('M-L2-13', 'Betis',                2, 'C'),
+    ('M-L2-14', 'Schalke',              2, 'C'),
+]
+
+# Derived from MANAGERS - used to highlight owned clubs in Clubs / Team Composition.
+OWNED_TEAMS = {team for _, team, _, _ in MANAGERS}
+
+# (competition_name, importance [1=most, 5=least], active_this_season)
+# Importance ordering: League > PL > Cup > Europa/Conference > Friendly / SP-WC.
+# League (1) is the primary tier-movement driver; others act as cup bumps.
+COMPETITIONS: list[tuple[str, int, bool]] = [
+    ('Liga 1',       1, True),
+    ('Liga 2',       1, True),
+    ('PL',           2, True),
+    ('Cup',          3, True),
+    ('Europa',       4, False),
+    ('Conference',   4, False),
+    ('Friendly Cup', 5, False),
+    ('SP-World Cup', 5, False),
+]
+
+# Cup result vocab, best -> worst. Used as the dropdown list for Season Results
+# result columns and for indexing relative achievement strength.
+RESULT_LEVELS = ['Winner', 'Final', 'Semi', 'QF', 'R16', 'Group', 'DNQ']
+
+# Manager tier -> expected finishing quartile in their league (1 = top 25%).
+TIER_EXPECTED_Q = {'A': 1, 'B': 2, 'C': 3, 'D': 4}
+TIERS = ['A', 'B', 'C', 'D']
+
+# Tier -> minimum (1-based) RESULT_LEVELS index needed in any cup to trigger
+# a +1 cup bump. Lower index = better cup result.
+#   B: Winner only                 (index 1)
+#   C: Semi or better              (index <= 3)
+#   D: R16 or better               (index <= 5)
+# Tier A managers cannot be bumped up (already at top).
+CUP_BUMP_MAX_IDX_1B = {'B': 1, 'C': 3, 'D': 5}
+
+# Draft lottery weights - weight of getting #1 pick for the NEW tier after
+# tier movement. Worse tier (D) has much higher weight (NBA lottery style).
+LOTTERY_WEIGHTS = {'A': 1, 'B': 2, 'C': 4, 'D': 8}
+
+# Blank rows to seed in Season Results for admin entry.
+SEASON_RESULTS_BLANK_ROWS = 200
 
 # Which CSV column of `1. Paste cvs` holds what.
 SRC_CLUB_COL = CSV_HEADERS.index('CLUB')          # 80 (0-indexed)
@@ -213,6 +282,18 @@ def build_readme(ws) -> None:
         ('4. Nations', 'National team rankings (live formulas).'),
         ('5. Team Composition', 'Class distribution (A/B/C/D counts) per club (live formulas).'),
         ('6. Draft Rules', 'Reference sheet: class/group/tier rules.'),
+        ('7. Managers', 'Roster: manager <-> team <-> league <-> initial tier. Source of truth.'),
+        ('8. Competitions', 'League, PL, Cup, Europa/Conference, Friendly, SP-World Cup with importance.'),
+        ('9. Expectations', 'Per-manager expected league finish (quartile), admin-overridable.'),
+        ('10. Season Results', 'ADMIN DATA ENTRY: one row per manager per season with final placements.'),
+        ('11. Tier Movement', 'Auto-computed: compares actual vs expected, outputs new tier for next draft.'),
+        ('12. Draft Order', 'NBA-style lottery weights by new tier. Admin runs draw, fills Actual Pick.'),
+        ('', ''),
+        ('TIER MOVEMENT LOGIC', 'h'),
+        ('League Delta', 'Actual quartile vs Expected: better = +1, worse = -1, same = 0.'),
+        ('Cup Bump', '+1 if any cup result beats tier-expected threshold (B: Winner; C: Semi+; D: R16+). A: no bump.'),
+        ('Anti-gaming', 'Cup bump is ignored when league delta is negative (winning a friendly does not save a tanked league).'),
+        ('Final Delta', 'Capped at +-1. New tier moves at most one step per season.'),
         ('', ''),
         ('ABILITY WEIGHTS PER POSITION', 'h'),
     ]
@@ -577,6 +658,414 @@ def build_draft_rules(ws) -> None:
     ws.column_dimensions['B'].width = 90
 
 
+def build_managers(ws) -> None:
+    ws['A1'] = 'MANAGER ROSTER'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:E1')
+    ws['A2'] = ("Source of truth for manager <-> team assignments. "
+                "To change roster, edit the MANAGERS constant in "
+                "scripts/build_admin.py and rebuild.")
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:E2')
+
+    headers = ['Manager', 'Team', 'League', 'Initial Tier', 'Active?']
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=4, column=i, value=h)
+    head_row(ws, 4, len(headers))
+
+    first_row = 5
+    last_row = 4 + len(MANAGERS)
+    for idx, (name, team, league, tier) in enumerate(MANAGERS):
+        row = first_row + idx
+        ws.cell(row=row, column=1, value=name).alignment = LEFT
+        team_cell = ws.cell(row=row, column=2, value=team)
+        team_cell.alignment = LEFT
+        team_cell.font = Font(bold=True)
+        team_cell.fill = PatternFill('solid', start_color='FFF2CC')
+        ws.cell(row=row, column=3, value=league).alignment = CENTER
+        ws.cell(row=row, column=4, value=tier).alignment = CENTER
+        ws.cell(row=row, column=5, value='YES').alignment = CENTER
+
+    apply_tier_coloring(ws, f'D{first_row}:D{last_row}')
+
+    ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{last_row}"
+    ws.freeze_panes = 'A5'
+    for col, width in enumerate([14, 28, 8, 14, 10], 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def build_competitions(ws) -> None:
+    ws['A1'] = 'COMPETITIONS'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:C1')
+    ws['A2'] = ('Lower Importance number = more important for tier movement. '
+                'League (1) is the primary driver. Cups (2+) only produce a '
+                '+1 bump when a manager wildly exceeds the tier-expected '
+                'result (see Tier Movement sheet).')
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:C2')
+
+    headers = ['Competition', 'Importance', 'Active This Season?']
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=4, column=i, value=h)
+    head_row(ws, 4, len(headers))
+
+    for idx, (name, imp, active) in enumerate(COMPETITIONS):
+        row = 5 + idx
+        ws.cell(row=row, column=1, value=name).alignment = LEFT
+        ws.cell(row=row, column=2, value=imp).alignment = CENTER
+        ws.cell(row=row, column=3,
+                value='YES' if active else 'NO').alignment = CENTER
+
+    ws.freeze_panes = 'A5'
+    for col, width in enumerate([18, 14, 24], 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def build_expectations(ws) -> None:
+    ws['A1'] = 'EXPECTATIONS - per-manager expected league finish'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:E1')
+    ws['A2'] = ("Bands are league quartiles: 1 = top 25%, 2 = 2nd quartile, "
+                "3 = 3rd quartile, 4 = bottom 25%. Suggested Band comes from "
+                "the manager's Initial Tier. Override Band is admin-typed. "
+                "Effective Band = Override if set, otherwise Suggested.")
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:E2')
+
+    headers = ['Manager', 'Current Tier', 'Suggested Band (Q)',
+               'Override Band (Q)', 'Effective Band (Q)']
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=4, column=i, value=h)
+    head_row(ws, 4, len(headers))
+
+    n_mgr = len(MANAGERS)
+    mgr_first = 5
+    mgr_last = 4 + n_mgr
+    mgrs_name_rng = f'Managers!$A$5:$A${mgr_last}'
+    mgrs_tier_rng = f'Managers!$D$5:$D${mgr_last}'
+
+    for idx, (name, _team, _lg, _tier) in enumerate(MANAGERS):
+        row = mgr_first + idx
+        mgr_ref = f'A{row}'
+        tier_ref = f'B{row}'
+        sug_ref = f'C{row}'
+        ovr_ref = f'D{row}'
+
+        ws.cell(row=row, column=1, value=name).alignment = LEFT
+
+        ws.cell(row=row, column=2, value=(
+            f'=IFERROR(INDEX({mgrs_tier_rng},'
+            f'MATCH({mgr_ref},{mgrs_name_rng},0)),"")'
+        )).alignment = CENTER
+
+        # Suggested band from tier: A=1, B=2, C=3, D=4
+        ws.cell(row=row, column=3, value=(
+            f'=IF({tier_ref}="A",1,'
+            f'IF({tier_ref}="B",2,'
+            f'IF({tier_ref}="C",3,'
+            f'IF({tier_ref}="D",4,""))))'
+        )).alignment = CENTER
+
+        ws.cell(row=row, column=4, value=None).alignment = CENTER
+
+        ws.cell(row=row, column=5, value=(
+            f'=IF({ovr_ref}="",{sug_ref},{ovr_ref})'
+        )).alignment = CENTER
+
+    # Override accepts 1/2/3/4 only
+    band_dv = DataValidation(type='list', formula1='"1,2,3,4"', allow_blank=True)
+    ws.add_data_validation(band_dv)
+    band_dv.add(f'D{mgr_first}:D{mgr_last}')
+
+    apply_tier_coloring(ws, f'B{mgr_first}:B{mgr_last}')
+
+    ws.freeze_panes = 'A5'
+    for col, width in enumerate([14, 14, 20, 20, 20], 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def build_season_results(ws) -> None:
+    ws['A1'] = 'SEASON RESULTS - admin data entry (append-only log)'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:J1')
+    ws['A2'] = ("One row per manager per season. League Finish = final rank "
+                "after playoff/playout. Cup columns use the dropdown list. "
+                "Tier Movement auto-uses the LATEST Season for each manager.")
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:J2')
+
+    cup_names = [c for c, _, _ in COMPETITIONS if c not in ('Liga 1', 'Liga 2')]
+    headers = ['Season', 'Manager', 'League Finish'] + cup_names
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=4, column=i, value=h)
+    head_row(ws, 4, len(headers))
+
+    data_first = 5
+    data_last = 4 + SEASON_RESULTS_BLANK_ROWS
+    mgr_last = 4 + len(MANAGERS)
+
+    # Manager dropdown from Managers sheet
+    mgr_dv = DataValidation(
+        type='list',
+        formula1=f'=Managers!$A$5:$A${mgr_last}',
+        allow_blank=True,
+    )
+    ws.add_data_validation(mgr_dv)
+    mgr_dv.add(f'B{data_first}:B{data_last}')
+
+    # Cup result dropdown from RESULT_LEVELS
+    result_dv = DataValidation(
+        type='list',
+        formula1='"' + ','.join(RESULT_LEVELS) + '"',
+        allow_blank=True,
+    )
+    ws.add_data_validation(result_dv)
+    for ci in range(4, 4 + len(cup_names)):
+        col = get_column_letter(ci)
+        result_dv.add(f'{col}{data_first}:{col}{data_last}')
+
+    ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{data_last}"
+    ws.freeze_panes = 'C5'
+    ws.column_dimensions['A'].width = 8
+    ws.column_dimensions['B'].width = 14
+    ws.column_dimensions['C'].width = 13
+    for ci in range(4, 4 + len(cup_names)):
+        ws.column_dimensions[get_column_letter(ci)].width = 13
+
+
+def build_tier_movement(ws) -> None:
+    ws['A1'] = 'TIER MOVEMENT - computed from latest Season Results'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:L1')
+    ws['A2'] = ("For each manager uses their MOST RECENT season in Season Results. "
+                "League Delta: +1 if actual quartile better than expected, -1 if "
+                "worse, 0 if same. Cup Bump: +1 if any cup result reaches the "
+                "tier-expected threshold (B: Winner; C: Semi+; D: R16+); A has no "
+                "bump. A manager who underperformed in league gets no cup bump. "
+                "Final Delta is capped at +-1.")
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:L2')
+
+    headers = ['Manager', 'League', 'Current Tier', 'Latest Season',
+               'League Finish', 'League Size', 'Actual Q', 'Expected Q',
+               'League Delta', 'Cup Bump', 'Final Delta', 'New Tier']
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=4, column=i, value=h)
+    head_row(ws, 4, len(headers))
+
+    n_mgr = len(MANAGERS)
+    mgr_first = 5
+    mgr_last = 4 + n_mgr
+    mgrs_name_rng = f'Managers!$A$5:$A${mgr_last}'
+    mgrs_tier_rng = f'Managers!$D$5:$D${mgr_last}'
+    mgrs_league_rng = f'Managers!$C$5:$C${mgr_last}'
+    exp_name_rng = f'Expectations!$A$5:$A${mgr_last}'
+    exp_eff_rng = f'Expectations!$E$5:$E${mgr_last}'
+
+    sr_first = 5
+    sr_last = 4 + SEASON_RESULTS_BLANK_ROWS
+    sr_season = f"'Season Results'!$A${sr_first}:$A${sr_last}"
+    sr_mgr = f"'Season Results'!$B${sr_first}:$B${sr_last}"
+    sr_finish = f"'Season Results'!$C${sr_first}:$C${sr_last}"
+
+    cup_names = [c for c, _, _ in COMPETITIONS if c not in ('Liga 1', 'Liga 2')]
+    sr_cup_rngs = []
+    for i in range(len(cup_names)):
+        col = get_column_letter(4 + i)
+        sr_cup_rngs.append(
+            f"'Season Results'!${col}${sr_first}:${col}${sr_last}"
+        )
+
+    # Excel array literal of RESULT_LEVELS for MATCH() lookups.
+    result_levels_literal = '{' + ','.join(f'"{r}"' for r in RESULT_LEVELS) + '}'
+
+    for idx, (name, _team, _lg, _tier) in enumerate(MANAGERS):
+        row = mgr_first + idx
+        mgr_ref = f'A{row}'
+        league_ref = f'B{row}'
+        tier_ref = f'C{row}'
+        latest_ref = f'D{row}'
+        finish_ref = f'E{row}'
+        size_ref = f'F{row}'
+        actq_ref = f'G{row}'
+        expq_ref = f'H{row}'
+        ldelta_ref = f'I{row}'
+        bump_ref = f'J{row}'
+        fdelta_ref = f'K{row}'
+
+        ws.cell(row=row, column=1, value=name).alignment = LEFT
+
+        ws.cell(row=row, column=2, value=(
+            f'=IFERROR(INDEX({mgrs_league_rng},'
+            f'MATCH({mgr_ref},{mgrs_name_rng},0)),"")'
+        )).alignment = CENTER
+
+        ws.cell(row=row, column=3, value=(
+            f'=IFERROR(INDEX({mgrs_tier_rng},'
+            f'MATCH({mgr_ref},{mgrs_name_rng},0)),"")'
+        )).alignment = CENTER
+
+        # Latest Season - empty if manager has no rows in Season Results.
+        # SUMPRODUCT(MAX(...)) is portable across Excel / LibreOffice without
+        # needing the _xlfn. prefix that MAXIFS sometimes requires.
+        ws.cell(row=row, column=4, value=(
+            f'=IF(COUNTIF({sr_mgr},{mgr_ref})=0,"",'
+            f'SUMPRODUCT(MAX(({sr_mgr}={mgr_ref})*{sr_season})))'
+        )).alignment = CENTER
+
+        # League Finish in that latest season (numeric - SUMIFS is safe).
+        ws.cell(row=row, column=5, value=(
+            f'=IF({latest_ref}="","",'
+            f'SUMIFS({sr_finish},{sr_season},{latest_ref},{sr_mgr},{mgr_ref}))'
+        )).alignment = CENTER
+
+        # League Size: count of managers in same league
+        ws.cell(row=row, column=6, value=(
+            f'=COUNTIF({mgrs_league_rng},{league_ref})'
+        )).alignment = CENTER
+
+        # Actual quartile: 1 = top 25%, ..., 4 = bottom 25%
+        ws.cell(row=row, column=7, value=(
+            f'=IF(OR({finish_ref}="",{finish_ref}=0),"",'
+            f'IF({finish_ref}<=ROUND({size_ref}/4,0),1,'
+            f'IF({finish_ref}<=ROUND({size_ref}/2,0),2,'
+            f'IF({finish_ref}<=ROUND({size_ref}*3/4,0),3,4))))'
+        )).alignment = CENTER
+
+        # Expected quartile from Expectations.Effective Band
+        ws.cell(row=row, column=8, value=(
+            f'=IFERROR(INDEX({exp_eff_rng},'
+            f'MATCH({mgr_ref},{exp_name_rng},0)),"")'
+        )).alignment = CENTER
+
+        # League Delta: lower quartile number is better
+        ws.cell(row=row, column=9, value=(
+            f'=IF(OR({actq_ref}="",{expq_ref}=""),"",'
+            f'IF({actq_ref}<{expq_ref},1,'
+            f'IF({actq_ref}>{expq_ref},-1,0)))'
+        )).alignment = CENTER
+
+        # Best cup result index (1 = Winner, higher = worse). 999 if no result.
+        # LOOKUP(2, 1/(cond), range) is the portable non-array idiom that
+        # returns the matching row's value without needing CSE or dynamic arrays.
+        cup_match_parts = []
+        for cup_rng in sr_cup_rngs:
+            cell_pull = (
+                f'IFERROR(LOOKUP(2,1/(({sr_season}={latest_ref})*'
+                f'({sr_mgr}={mgr_ref})),{cup_rng}),"")'
+            )
+            cup_match_parts.append(
+                f'IFERROR(MATCH({cell_pull},{result_levels_literal},0),999)'
+            )
+        best_cup_idx = 'MIN(' + ','.join(cup_match_parts) + ')'
+
+        # Cup Bump: only for tiers B/C/D, when best_cup_idx <= threshold
+        b_thr = CUP_BUMP_MAX_IDX_1B['B']
+        c_thr = CUP_BUMP_MAX_IDX_1B['C']
+        d_thr = CUP_BUMP_MAX_IDX_1B['D']
+        ws.cell(row=row, column=10, value=(
+            f'=IF({latest_ref}="",0,'
+            f'IF({tier_ref}="B",IF({best_cup_idx}<={b_thr},1,0),'
+            f'IF({tier_ref}="C",IF({best_cup_idx}<={c_thr},1,0),'
+            f'IF({tier_ref}="D",IF({best_cup_idx}<={d_thr},1,0),0))))'
+        )).alignment = CENTER
+
+        # Final Delta: add cup bump only when league_delta >= 0; clamp +-1
+        ws.cell(row=row, column=11, value=(
+            f'=IF({ldelta_ref}="","",'
+            f'MAX(-1,MIN(1,{ldelta_ref}+'
+            f'IF({ldelta_ref}<0,0,{bump_ref}))))'
+        )).alignment = CENTER
+
+        # New Tier: A=1..D=4; +1 delta = tier UP (lower index). Clamp 1..4.
+        old_idx = (
+            f'IF({tier_ref}="A",1,IF({tier_ref}="B",2,'
+            f'IF({tier_ref}="C",3,IF({tier_ref}="D",4,0))))'
+        )
+        new_idx = f'MAX(1,MIN(4,{old_idx}-{fdelta_ref}))'
+        ws.cell(row=row, column=12, value=(
+            f'=IF({fdelta_ref}="",{tier_ref},'
+            f'CHOOSE({new_idx},"A","B","C","D"))'
+        )).alignment = CENTER
+
+    apply_tier_coloring(ws, f'C{mgr_first}:C{mgr_last}')
+    apply_tier_coloring(ws, f'L{mgr_first}:L{mgr_last}')
+
+    ws.freeze_panes = 'A5'
+    widths = [14, 8, 10, 13, 13, 11, 9, 10, 12, 10, 12, 10]
+    for col, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+
+def build_draft_order(ws) -> None:
+    ws['A1'] = 'DRAFT ORDER - NBA-style lottery weights by new tier'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:G1')
+    ws['A2'] = ("Lower tier = better draft odds. Lottery Weight is each manager's "
+                "share of the #1-pick probability. Reverse Rank shows the straight "
+                "reverse-order pick (ties = same rank). Run the draw externally "
+                "and record the outcome in Actual Pick.")
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:G2')
+
+    headers = ['Manager', 'Team', 'League', 'New Tier',
+               'Lottery Weight', 'Reverse Rank', 'Actual Pick']
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=4, column=i, value=h)
+    head_row(ws, 4, len(headers))
+
+    n_mgr = len(MANAGERS)
+    mgr_first = 5
+    mgr_last = 4 + n_mgr
+    tm_name_rng = f"'Tier Movement'!$A$5:$A${mgr_last}"
+    tm_newtier_rng = f"'Tier Movement'!$L$5:$L${mgr_last}"
+
+    # Build nested IF for lottery weight: IF(tier="A",w_A, IF(tier="B",w_B, ...))
+    def weight_formula(tier_cell: str) -> str:
+        expr = '0'
+        for tier in reversed(TIERS):
+            expr = f'IF({tier_cell}="{tier}",{LOTTERY_WEIGHTS[tier]},{expr})'
+        return expr
+
+    weight_range = f'$E${mgr_first}:$E${mgr_last}'
+
+    for idx, (name, team, league, _tier) in enumerate(MANAGERS):
+        row = mgr_first + idx
+        mgr_ref = f'A{row}'
+        tier_ref = f'D{row}'
+        weight_ref = f'E{row}'
+
+        ws.cell(row=row, column=1, value=name).alignment = LEFT
+        team_cell = ws.cell(row=row, column=2, value=team)
+        team_cell.alignment = LEFT
+        team_cell.font = Font(bold=True)
+        team_cell.fill = PatternFill('solid', start_color='FFF2CC')
+        ws.cell(row=row, column=3, value=league).alignment = CENTER
+
+        ws.cell(row=row, column=4, value=(
+            f'=IFERROR(INDEX({tm_newtier_rng},'
+            f'MATCH({mgr_ref},{tm_name_rng},0)),"")'
+        )).alignment = CENTER
+
+        ws.cell(row=row, column=5, value=(
+            f'=IF({tier_ref}="","",{weight_formula(tier_ref)})'
+        )).alignment = CENTER
+
+        ws.cell(row=row, column=6, value=(
+            f'=IF({tier_ref}="","",RANK({weight_ref},{weight_range}))'
+        )).alignment = CENTER
+
+        ws.cell(row=row, column=7, value=None).alignment = CENTER
+
+    apply_tier_coloring(ws, f'D{mgr_first}:D{mgr_last}')
+
+    ws.freeze_panes = 'A5'
+    widths = [14, 26, 8, 10, 14, 13, 12]
+    for col, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -633,6 +1122,24 @@ def main() -> int:
 
     print("Building Draft Rules...")
     build_draft_rules(wb.create_sheet('Draft Rules'))
+
+    print(f"Building Managers ({len(MANAGERS)} rows)...")
+    build_managers(wb.create_sheet('Managers'))
+
+    print(f"Building Competitions ({len(COMPETITIONS)} rows)...")
+    build_competitions(wb.create_sheet('Competitions'))
+
+    print("Building Expectations...")
+    build_expectations(wb.create_sheet('Expectations'))
+
+    print(f"Building Season Results ({SEASON_RESULTS_BLANK_ROWS} blank rows)...")
+    build_season_results(wb.create_sheet('Season Results'))
+
+    print("Building Tier Movement...")
+    build_tier_movement(wb.create_sheet('Tier Movement'))
+
+    print("Building Draft Order...")
+    build_draft_order(wb.create_sheet('Draft Order'))
 
     print(f"Saving {OUT}...")
     wb.save(OUT)
