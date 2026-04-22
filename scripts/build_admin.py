@@ -26,6 +26,7 @@ from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.formula import ArrayFormula
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS_DIR.parent
@@ -184,6 +185,124 @@ PLAYER_CHANGES_LOG_ROWS = 200
 PLAYER_CHANGES_LOG_FIRST = 7
 PLAYER_CHANGES_LOG_LAST = 6 + PLAYER_CHANGES_LOG_ROWS
 
+# ---------------------------------------------------------------------------
+# TACTICAL MENTOR CONFIG
+# ---------------------------------------------------------------------------
+# Formation catalog: each formation's 11 slot positions in order
+# (GK, then defenders, then midfielders, then attackers).
+FORMATIONS: dict[str, list[str]] = {
+    '4-4-2':   ['GK','CB','CB','LB','RB','CMF','CMF','LMF','RMF','CF','CF'],
+    '4-3-3':   ['GK','CB','CB','LB','RB','DMF','CMF','CMF','LWF','RWF','CF'],
+    '4-5-1':   ['GK','CB','CB','LB','RB','DMF','CMF','CMF','LMF','RMF','CF'],
+    '3-5-2':   ['GK','CWP','CB','CB','DMF','CMF','CMF','LMF','RMF','CF','CF'],
+    '5-3-2':   ['GK','CWP','CB','CB','LWB','RWB','CMF','CMF','CMF','CF','CF'],
+    '3-4-3':   ['GK','CWP','CB','CB','CMF','CMF','LMF','RMF','LWF','RWF','CF'],
+    '4-2-3-1': ['GK','CB','CB','LB','RB','DMF','DMF','AMF','LMF','RMF','CF'],
+}
+
+# Each slot position -> which Players-sheet B1 column to score from.
+POS_TO_B1COL: dict[str, str] = {
+    'GK':  'GK B1',
+    'CB':  'CB/CWP B1', 'CWP': 'CB/CWP B1',
+    'LB':  'SB B1',     'RB':  'SB B1',
+    'LWB': 'WB B1',     'RWB': 'WB B1',
+    'DMF': 'DMF B1',
+    'CMF': 'CMF B1',
+    'LMF': 'SMF B1',    'RMF': 'SMF B1',
+    'AMF': 'AMF B1',
+    'LWF': 'WF B1',     'RWF': 'WF B1',
+    'SS':  'SS B1',
+    'CF':  'CF B1',
+}
+
+TACTICAL_MENTOR_SQUAD_ROWS = 30
+TACTICAL_MENTOR_SUBS_ROWS = 5
+
+# Full 16-position set admins can pick from in the Manual XI section.
+POSITIONS_FULL = [
+    'GK', 'CB', 'CWP', 'LB', 'RB', 'LWB', 'RWB',
+    'DMF', 'CMF', 'LMF', 'RMF', 'AMF',
+    'LWF', 'RWF', 'SS', 'CF',
+]
+
+# Manual XI position constraints (hard limits). Positions absent from the map
+# have no per-position cap beyond the category cap.
+POSITION_SINGLE_SLOT = {
+    'GK', 'CWP', 'LB', 'RB', 'LWB', 'RWB',
+    'LMF', 'RMF', 'LWF', 'RWF',
+}
+CATEGORY_DEFENDERS = {'CB', 'CWP', 'LB', 'RB', 'LWB', 'RWB'}
+CATEGORY_MIDFIELDERS = {'DMF', 'CMF', 'LMF', 'RMF', 'AMF'}
+CATEGORY_ATTACKERS = {'LWF', 'RWF', 'SS', 'CF'}
+CATEGORY_MAX = 6
+
+# PES6 team-style preset names (dropdown options for tactics selection).
+TACTIC_PRESETS = [
+    'Counter Attack',
+    'Frontline Pressure',
+    'Offside Trap',
+    'Possession Game',
+    'All-Out Attack',
+    'All-Out Defence',
+    'Side Attack',
+    'Centre Attack',
+    'Quick Passing',
+    'Long Pass',
+]
+
+# Position category headers used by the B1 modifier table.
+POSITION_CATEGORIES = [
+    'GK', 'CB', 'LB/RB', 'LWB/RWB', 'DMF', 'CMF',
+    'LMF/RMF', 'AMF', 'LWF/RWF', 'SS', 'CF',
+]
+
+# Map each of the 16 formation positions to its category column in the
+# modifier table. (CB and CWP share "CB"; SB variants share "LB/RB" etc.)
+POSITION_TO_CATEGORY = {
+    'GK': 'GK',
+    'CB': 'CB', 'CWP': 'CB',
+    'LB': 'LB/RB', 'RB': 'LB/RB',
+    'LWB': 'LWB/RWB', 'RWB': 'LWB/RWB',
+    'DMF': 'DMF',
+    'CMF': 'CMF',
+    'LMF': 'LMF/RMF', 'RMF': 'LMF/RMF',
+    'AMF': 'AMF',
+    'LWF': 'LWF/RWF', 'RWF': 'LWF/RWF',
+    'SS': 'SS',
+    'CF': 'CF',
+}
+
+# Percent B1 modifier per (tactic, position category). Synthetic - no public
+# PES6 formula exists - tuned to reward positions each tactic relies on and
+# mildly penalise positions that become less useful. Admins can tune in the
+# workbook's Tactic Modifier Table section; formulas read live from that
+# table so edits take effect on recalc.
+TACTIC_MODIFIERS: dict[str, dict[str, int]] = {
+    'Counter Attack':     {'GK':0,'CB':-2,'LB/RB':0,'LWB/RWB':3,'DMF':-2,'CMF':-3,'LMF/RMF':4,'AMF':-2,'LWF/RWF':5,'SS':5,'CF':4},
+    'Frontline Pressure': {'GK':0,'CB':2,'LB/RB':3,'LWB/RWB':4,'DMF':5,'CMF':4,'LMF/RMF':3,'AMF':2,'LWF/RWF':2,'SS':3,'CF':1},
+    'Offside Trap':       {'GK':2,'CB':5,'LB/RB':3,'LWB/RWB':2,'DMF':0,'CMF':0,'LMF/RMF':0,'AMF':0,'LWF/RWF':0,'SS':0,'CF':0},
+    'Possession Game':    {'GK':0,'CB':0,'LB/RB':0,'LWB/RWB':0,'DMF':2,'CMF':4,'LMF/RMF':2,'AMF':5,'LWF/RWF':2,'SS':2,'CF':1},
+    'All-Out Attack':     {'GK':0,'CB':-3,'LB/RB':-2,'LWB/RWB':0,'DMF':-2,'CMF':-1,'LMF/RMF':2,'AMF':3,'LWF/RWF':4,'SS':5,'CF':5},
+    'All-Out Defence':    {'GK':2,'CB':4,'LB/RB':3,'LWB/RWB':2,'DMF':3,'CMF':0,'LMF/RMF':-1,'AMF':-2,'LWF/RWF':-3,'SS':-4,'CF':-3},
+    'Side Attack':        {'GK':0,'CB':0,'LB/RB':2,'LWB/RWB':3,'DMF':0,'CMF':0,'LMF/RMF':4,'AMF':1,'LWF/RWF':5,'SS':1,'CF':2},
+    'Centre Attack':      {'GK':0,'CB':0,'LB/RB':0,'LWB/RWB':0,'DMF':1,'CMF':3,'LMF/RMF':1,'AMF':4,'LWF/RWF':1,'SS':4,'CF':4},
+    'Quick Passing':      {'GK':0,'CB':0,'LB/RB':1,'LWB/RWB':1,'DMF':2,'CMF':3,'LMF/RMF':2,'AMF':3,'LWF/RWF':1,'SS':2,'CF':1},
+    'Long Pass':          {'GK':1,'CB':2,'LB/RB':1,'LWB/RWB':0,'DMF':1,'CMF':1,'LMF/RMF':1,'AMF':1,'LWF/RWF':1,'SS':3,'CF':3},
+}
+
+# Slider modifier per tactic: each tactic shifts the recommended 0-20 slider
+# value. Baseline is 10 (neutral); tactics add/subtract. Slider name -> tactic
+# -> delta. Final slider = clamp(10 + sum of chosen-tactic deltas, 0, 20).
+TACTIC_SLIDER_DELTAS: dict[str, dict[str, int]] = {
+    'Defensive Line':  {'Frontline Pressure':6,'Offside Trap':5,'All-Out Attack':3,'All-Out Defence':-4,'Counter Attack':-5,'Possession Game':2},
+    'Pressing':        {'Frontline Pressure':8,'All-Out Attack':3,'All-Out Defence':-4,'Counter Attack':-3,'Possession Game':1},
+    'Compactness':     {'Offside Trap':4,'All-Out Defence':4,'Counter Attack':3,'Possession Game':2,'All-Out Attack':-3},
+    'Width':           {'Side Attack':7,'Centre Attack':-7,'Quick Passing':-2,'Long Pass':2},
+    'Player Support':  {'Possession Game':5,'Quick Passing':4,'Counter Attack':-4,'Long Pass':-3,'All-Out Attack':2},
+    'Position Switch': {'Possession Game':4,'Centre Attack':2,'Side Attack':2,'All-Out Defence':-3},
+}
+TACTICAL_MENTOR_SUBS_MANUAL_ROWS = 7
+
 # Which CSV column of `1. Paste cvs` holds what.
 SRC_CLUB_COL = CSV_HEADERS.index('CLUB')          # 80 (0-indexed)
 SRC_NATION_COL = CSV_HEADERS.index('NATIONALITY') # 77
@@ -320,6 +439,7 @@ def build_readme(ws) -> None:
         ('11. Tier Movement', 'Auto-computed: compares actual vs expected, outputs new tier for next draft.'),
         ('12. Draft Order', 'NBA-style lottery weights by new tier. Admin runs draw, fills Actual Pick.'),
         ('13. Player Changes', 'ADMIN OVERRIDE: stage transfers / drafts / arrangements. Apply Changes toggle makes Clubs and Team Composition reflect the new rosters.'),
+        ('14. Tactical Mentor', 'Dynamic scouting + planner. Top section: type team + formation, see squad, greedy Best XI, subs, tactical slider suggestions. Lower section: manually pick your XI (player + PES6 position each), choose up to 4 tactic presets, get PES6-style 0-20 slider values and a per-player B1 efficiency panel.'),
         ('', ''),
         ('TIER MOVEMENT LOGIC', 'h'),
         ('Bands', 'Outcome-based: Champion (top 3), Playoff (4-8), Mid-safe (middle), Playout (bottom 4).'),
@@ -1313,6 +1433,1147 @@ def build_player_changes(ws) -> None:
         ws.column_dimensions[get_column_letter(col)].width = w
 
 
+def build_tactical_mentor(ws) -> None:
+    """Dynamic team-scouting tab: pick a team + formation, see squad, best XI,
+    and tactical slider suggestions.  All formulas - changing Team Name or
+    Formation triggers live recalc.
+    """
+    INPUT_FILL = PatternFill('solid', start_color='FFF2CC')
+    SECTION_FONT = Font(bold=True, size=12, color='1F4E78')
+    SECTION_FILL = PatternFill('solid', start_color='DDEBF7')
+
+    # --- Row layout anchors -------------------------------------------------
+    R_INPUT = 4            # Team Type at row 4
+    R_NAME = 5             # Team Name at row 5
+    R_FORM = 6             # Formation at row 6
+    R_SIZE = 7             # Squad size display
+
+    R_SQUAD_HDR = 9
+    R_SQUAD_COL = 10
+    SQUAD_ROWS = TACTICAL_MENTOR_SQUAD_ROWS
+    R_SQUAD_FIRST = 11
+    R_SQUAD_LAST = R_SQUAD_FIRST + SQUAD_ROWS - 1   # 40
+
+    R_XI_HDR = R_SQUAD_LAST + 2    # 42
+    R_XI_COL = R_XI_HDR + 1        # 43
+    R_XI_FIRST = R_XI_COL + 1      # 44
+    R_XI_LAST = R_XI_FIRST + 10    # 54 (11 slots)
+
+    R_SUBS_HDR = R_XI_LAST + 2     # 56
+    R_SUBS_COL = R_SUBS_HDR + 1    # 57
+    R_SUBS_FIRST = R_SUBS_COL + 1  # 58
+    SUBS_ROWS = TACTICAL_MENTOR_SUBS_ROWS
+    R_SUBS_LAST = R_SUBS_FIRST + SUBS_ROWS - 1  # 62
+
+    R_TAC_HDR = R_SUBS_LAST + 2    # 64
+    R_TAC_COL = R_TAC_HDR + 1      # 65
+    R_TAC_FIRST = R_TAC_COL + 1    # 66
+    R_TAC_LAST = R_TAC_FIRST + 4   # 70 (5 metrics)
+
+    R_FORM_HDR = R_TAC_LAST + 2    # 72
+    R_FORM_COL = R_FORM_HDR + 1    # 73
+    R_FORM_FIRST = R_FORM_COL + 1  # 74
+    R_FORM_LAST = R_FORM_FIRST + len(FORMATIONS) - 1  # 80
+
+    # --- Cell refs ----------------------------------------------------------
+    TEAM_TYPE = '$B$4'
+    TEAM_NAME = '$B$5'
+    FORMATION = '$B$6'
+
+    # --- Players sheet ranges ----------------------------------------------
+    eff_club_rng = players_range('Effective Club')
+    nat_rng = players_range('Nationality')
+    name_rng = players_range('Name')
+    ovr_rng = players_range('OVR')
+    eff_b1_rng = players_range('Effective B1')
+    best_pos_rng = players_range('Best Position')
+    class_rng = players_range('Class')
+    age_rng = players_range('Age')
+    ability_rng = players_range('Ability ★')
+    topspeed_rng = players_range('TOP SPEED')
+    accel_rng = players_range('ACCELERATION')
+    stamina_rng = players_range('STAMINA')
+    aggression_rng = players_range('AGGRESSION')
+    response_rng = players_range('RESPONSE')
+    teamwork_rng = players_range('TEAM WORK')
+    dline_rng = players_range('D-LINE CONTROL')
+
+    # --- Helper expressions -------------------------------------------------
+    # Team filter mask (array of 0/1 per player row).
+    team_mask = (
+        f'(({TEAM_TYPE}="Club")*({eff_club_rng}={TEAM_NAME})+'
+        f'({TEAM_TYPE}="Nation")*({nat_rng}={TEAM_NAME}))'
+    )
+
+    def b1_slot_array_expr(position_cell: str) -> str:
+        """Each player's B1 at whatever position `position_cell` contains.
+
+        Groups the 16 formation positions by their shared B1 column so the
+        expression stays as short as possible.
+        """
+        col_to_positions: dict[str, list[str]] = {}
+        for pos, b1_col in POS_TO_B1COL.items():
+            col_to_positions.setdefault(b1_col, []).append(pos)
+        parts = []
+        for b1_col, positions in col_to_positions.items():
+            pos_match = '+'.join(f'({position_cell}="{p}")' for p in positions)
+            parts.append(f'({pos_match})*N(+{players_range(b1_col)})')
+        return '(' + '+'.join(parts) + ')'
+
+    def excluded_mask_expr(prior_cells: list[str]) -> str:
+        """1 where player's name is NOT in any of `prior_cells`, else 0."""
+        if not prior_cells:
+            return '1'
+        return '(' + '*'.join(f'({name_rng}<>{c})' for c in prior_cells) + ')'
+
+    # =======================================================================
+    # TITLE
+    # =======================================================================
+    ws['A1'] = 'TACTICAL MENTOR'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:T1')
+    ws['A2'] = (
+        "Pick a club or nation + formation; tool pulls the squad, builds a "
+        "greedy Best XI (top B1 per slot, each player used once), and "
+        "suggests tactical slider values based on squad strengths. All "
+        "dynamic - edit Team Name or Formation and everything recalcs."
+    )
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:T2')
+
+    # =======================================================================
+    # INPUT SECTION
+    # =======================================================================
+    def input_label(row, text):
+        c = ws.cell(row=row, column=1, value=text)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal='right', vertical='center')
+
+    input_label(R_INPUT, 'Team Type:')
+    ws.cell(row=R_INPUT, column=2, value='Club').alignment = CENTER
+    ws.cell(row=R_INPUT, column=2).font = Font(bold=True)
+    ws.cell(row=R_INPUT, column=2).fill = INPUT_FILL
+    type_dv = DataValidation(type='list', formula1='"Club,Nation"', allow_blank=False)
+    ws.add_data_validation(type_dv)
+    type_dv.add(f'B{R_INPUT}:B{R_INPUT}')
+    ws.cell(row=R_INPUT, column=3,
+            value='(Club -> Effective Club; Nation -> Nationality)').font = \
+        Font(italic=True, color='808080')
+    ws.merge_cells(start_row=R_INPUT, start_column=3, end_row=R_INPUT, end_column=20)
+
+    input_label(R_NAME, 'Team Name:')
+    nm = ws.cell(row=R_NAME, column=2, value='')
+    nm.alignment = LEFT
+    nm.font = Font(bold=True)
+    nm.fill = INPUT_FILL
+    ws.cell(row=R_NAME, column=3,
+            value='(Type exactly: e.g. "Bochum", "Bayern Munchen", "Germany")').font = \
+        Font(italic=True, color='808080')
+    ws.merge_cells(start_row=R_NAME, start_column=3, end_row=R_NAME, end_column=20)
+
+    input_label(R_FORM, 'Formation:')
+    fm = ws.cell(row=R_FORM, column=2, value='4-4-2')
+    fm.alignment = CENTER
+    fm.font = Font(bold=True)
+    fm.fill = INPUT_FILL
+    form_dv = DataValidation(
+        type='list',
+        formula1='"' + ','.join(FORMATIONS.keys()) + '"',
+        allow_blank=False,
+    )
+    ws.add_data_validation(form_dv)
+    form_dv.add(f'B{R_FORM}:B{R_FORM}')
+    ws.cell(row=R_FORM, column=3,
+            value='(Changing reshuffles Best XI slots below)').font = \
+        Font(italic=True, color='808080')
+    ws.merge_cells(start_row=R_FORM, start_column=3, end_row=R_FORM, end_column=20)
+
+    input_label(R_SIZE, 'Squad size:')
+    sz = ws.cell(row=R_SIZE, column=2, value=f'=SUMPRODUCT({team_mask})')
+    sz.alignment = CENTER
+    sz.font = Font(bold=True)
+
+    # =======================================================================
+    # SQUAD SECTION
+    # =======================================================================
+    sh = ws.cell(row=R_SQUAD_HDR, column=1,
+                 value='SQUAD - sorted by Effective B1 descending')
+    sh.font = SECTION_FONT
+    sh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_SQUAD_HDR, start_column=1,
+                   end_row=R_SQUAD_HDR, end_column=20)
+
+    squad_headers = [
+        'Rank', 'Name', 'Best Pos', 'OVR', 'Eff B1', 'Class', 'Age', 'Foot', 'Ability *',
+        'GK', 'CB/CWP', 'SB', 'WB', 'DMF', 'CMF', 'SMF', 'AMF', 'WF', 'SS', 'CF',
+    ]
+    for i, h in enumerate(squad_headers, 1):
+        ws.cell(row=R_SQUAD_COL, column=i, value=h)
+    head_row(ws, R_SQUAD_COL, len(squad_headers))
+
+    foot_rng = players_range('Foot')
+
+    # First cell of the players range (Players!$BQ$2 or similar) - used for
+    # converting an absolute row number to a 1-based position in the range.
+    first_cell = eff_b1_rng.split(':')[0]  # e.g. 'Players!$BQ$2'
+
+    # Each squad row uses hidden helper cells in columns U and V:
+    #   U = Nth largest Effective B1 in team (via AGGREGATE LARGE)
+    #   V = position within players range where that value lives (via
+    #       AGGREGATE SMALL over ROW()/(mask=nth) which ignores div-by-zero)
+    # Display cells (B..T) INDEX into Players using the V helper.
+    # AGGREGATE(14/15, 6, ..., k) is the portable non-CSE way to run
+    # LARGE/SMALL over a computed array in Excel 2010+/LibreOffice 4.4+.
+    HELPER_NTH = 21   # column U
+    HELPER_POS = 22   # column V
+
+    for i in range(SQUAD_ROWS):
+        r = R_SQUAD_FIRST + i
+        rank = i + 1
+        masked_b1 = f'({team_mask}*N(+{eff_b1_rng}))'
+        nth_ref = f'$U${r}'
+        pos_ref = f'$V${r}'
+
+        ws.cell(row=r, column=1, value=rank).alignment = CENTER
+
+        # Helper U: Nth largest B1 in team.
+        # CSE ArrayFormula - needed so LARGE sees the computed array as an
+        # array (LibreOffice pre-Calc-7.5-dynamic otherwise returns scalar 0).
+        u_cell = f'U{r}'
+        ws[u_cell] = ArrayFormula(
+            u_cell,
+            f'=IFERROR(LARGE({masked_b1},{rank}),0)',
+        )
+        # Helper V: position in players range where nth_ref lives.
+        v_cell = f'V{r}'
+        ws[v_cell] = ArrayFormula(
+            v_cell,
+            f'=IFERROR(IF({nth_ref}<=0,"",'
+            f'MATCH({nth_ref},{masked_b1},0)),"")',
+        )
+
+        def cell_from(col_idx, src_rng, fmt=None):
+            c = ws.cell(row=r, column=col_idx,
+                        value=f'=IFERROR(INDEX({src_rng},{pos_ref}),"")')
+            c.alignment = LEFT if col_idx == 2 else CENTER
+            if fmt:
+                c.number_format = fmt
+            return c
+
+        cell_from(2, name_rng)              # Name
+        cell_from(3, best_pos_rng)          # Best Pos
+        cell_from(4, ovr_rng, '0.0')        # OVR
+        cell_from(5, eff_b1_rng, '0.00')    # Eff B1
+        cell_from(6, class_rng)             # Class
+        cell_from(7, age_rng)               # Age
+        cell_from(8, foot_rng)              # Foot
+        cell_from(9, ability_rng)           # Ability *
+
+        # 11 B1 per position columns
+        for j, pos_col in enumerate(POSITIONS):
+            b1_range = players_range(f'{pos_col} B1')
+            cell_from(10 + j, b1_range, '0.00')
+
+    # Highlight Class column A/B/C/D
+    apply_tier_coloring(ws, f'F{R_SQUAD_FIRST}:F{R_SQUAD_LAST}')
+    # OVR color scale for quick visual ranking
+    apply_effb1_colorscale(ws, f'E{R_SQUAD_FIRST}:E{R_SQUAD_LAST}')
+
+    # =======================================================================
+    # BEST XI SECTION
+    # =======================================================================
+    xh = ws.cell(row=R_XI_HDR, column=1,
+                 value='BEST XI - greedy (highest B1 per slot; no duplicates)')
+    xh.font = SECTION_FONT
+    xh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_XI_HDR, start_column=1,
+                   end_row=R_XI_HDR, end_column=10)
+
+    xi_headers = ['Slot', 'Position', 'Player', 'Slot B1', 'OVR', 'Class',
+                  'Best Pos', 'Note']
+    for i, h in enumerate(xi_headers, 1):
+        ws.cell(row=R_XI_COL, column=i, value=h)
+    head_row(ws, R_XI_COL, len(xi_headers))
+
+    # Formation reference: each XI row pulls position from the formation table.
+    form_name_rng = f'$A${R_FORM_FIRST}:$A${R_FORM_LAST}'
+    form_slots_rng = f'$B${R_FORM_FIRST}:$L${R_FORM_LAST}'
+
+    # Track the player-name cells as we go, for the excluded-mask on later slots.
+    xi_name_cells: list[str] = []
+
+    # Hidden helpers: I = best B1 at slot, J = match position in players range.
+    XI_HELPER_B1 = 9    # column I
+    XI_HELPER_POS = 10  # column J
+
+    for i in range(11):
+        r = R_XI_FIRST + i
+        slot_num = i + 1
+
+        ws.cell(row=r, column=1, value=slot_num).alignment = CENTER
+
+        # Position for this slot (INDEX into the formation table)
+        pos_formula = (
+            f'=IFERROR(INDEX({form_slots_rng},'
+            f'MATCH({FORMATION},{form_name_rng},0),{slot_num}),"")'
+        )
+        pos_cell = ws.cell(row=r, column=2, value=pos_formula)
+        pos_cell.alignment = CENTER
+        pos_cell.font = Font(bold=True)
+
+        # Greedy pick helpers via AGGREGATE (array-safe without CSE).
+        pos_ref = f'$B${r}'
+        b1_arr = b1_slot_array_expr(pos_ref)
+        excl = excluded_mask_expr(xi_name_cells)
+        masked_slot_b1 = f'({team_mask}*{excl}*{b1_arr})'
+
+        b1_ref = f'$I${r}'
+        pos_match_ref = f'$J${r}'
+
+        # Helper I: best available B1 at this slot. CSE array formula.
+        i_cell = f'I{r}'
+        ws[i_cell] = ArrayFormula(
+            i_cell,
+            f'=IFERROR(MAX({masked_slot_b1}),0)',
+        )
+        # Helper J: position in players range where that B1 lives.
+        j_cell = f'J{r}'
+        ws[j_cell] = ArrayFormula(
+            j_cell,
+            f'=IFERROR(IF({b1_ref}<=0,"",'
+            f'MATCH({b1_ref},{masked_slot_b1},0)),"")',
+        )
+
+        ws.cell(row=r, column=3, value=(
+            f'=IF({pos_match_ref}="","[no player]",'
+            f'IFERROR(INDEX({name_rng},{pos_match_ref}),"[no player]"))'
+        )).alignment = LEFT
+        slot_b1_cell = ws.cell(
+            row=r, column=4,
+            value=f'=IF({b1_ref}<=0,"",{b1_ref})'
+        )
+        slot_b1_cell.alignment = CENTER
+        slot_b1_cell.number_format = '0.00'
+
+        ovr_cell = ws.cell(
+            row=r, column=5,
+            value=f'=IFERROR(INDEX({ovr_rng},{pos_match_ref}),"")'
+        )
+        ovr_cell.alignment = CENTER
+        ovr_cell.number_format = '0.0'
+
+        ws.cell(row=r, column=6,
+                value=f'=IFERROR(INDEX({class_rng},{pos_match_ref}),"")').alignment = CENTER
+        ws.cell(row=r, column=7,
+                value=f'=IFERROR(INDEX({best_pos_rng},{pos_match_ref}),"")').alignment = CENTER
+
+        # "Note" flag: warn when player's natural Best Position doesn't match
+        # the slot's position (common with greedy picks).
+        note_formula = (
+            f'=IFERROR(IF(INDEX({best_pos_rng},{pos_match_ref})="",'
+            f'"",'
+            f'IF({pos_ref}=INDEX({best_pos_rng},{pos_match_ref}),"",'
+            f'"Out of position (best at "&INDEX({best_pos_rng},{pos_match_ref})&")"'
+            f')),"")'
+        )
+        ws.cell(row=r, column=8, value=note_formula).font = \
+            Font(italic=True, color='808080')
+
+        xi_name_cells.append(f'$C${r}')
+
+    apply_tier_coloring(ws, f'F{R_XI_FIRST}:F{R_XI_LAST}')
+
+    # =======================================================================
+    # SUBSTITUTES SECTION
+    # =======================================================================
+    subh = ws.cell(row=R_SUBS_HDR, column=1,
+                   value='SUBSTITUTES - next 5 by Effective B1, excluding XI')
+    subh.font = SECTION_FONT
+    subh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_SUBS_HDR, start_column=1,
+                   end_row=R_SUBS_HDR, end_column=10)
+
+    sub_headers = ['#', 'Name', 'Best Pos', 'OVR', 'Eff B1', 'Class']
+    for i, h in enumerate(sub_headers, 1):
+        ws.cell(row=R_SUBS_COL, column=i, value=h)
+    head_row(ws, R_SUBS_COL, len(sub_headers))
+
+    # Hidden helpers: H = best available B1, I = match pos in players range.
+    SUBS_HELPER_B1 = 8
+    SUBS_HELPER_POS = 9
+
+    for i in range(SUBS_ROWS):
+        r = R_SUBS_FIRST + i
+        rank = i + 1
+        # prior sub names already picked
+        prior_subs = [f'$B${R_SUBS_FIRST + k}' for k in range(i)]
+        excl = excluded_mask_expr(xi_name_cells + prior_subs)
+        masked_b1 = f'({team_mask}*{excl}*N(+{eff_b1_rng}))'
+        b1_ref = f'$H${r}'
+        pos_ref_sub = f'$I${r}'
+
+        h_cell = f'H{r}'
+        ws[h_cell] = ArrayFormula(
+            h_cell,
+            f'=IFERROR(MAX({masked_b1}),0)',
+        )
+        i_cell_sub = f'I{r}'
+        ws[i_cell_sub] = ArrayFormula(
+            i_cell_sub,
+            f'=IFERROR(IF({b1_ref}<=0,"",'
+            f'MATCH({b1_ref},{masked_b1},0)),"")',
+        )
+
+        ws.cell(row=r, column=1, value=f'S{rank}').alignment = CENTER
+        ws.cell(row=r, column=2,
+                value=f'=IFERROR(INDEX({name_rng},{pos_ref_sub}),"")').alignment = LEFT
+        ws.cell(row=r, column=3,
+                value=f'=IFERROR(INDEX({best_pos_rng},{pos_ref_sub}),"")').alignment = CENTER
+        o = ws.cell(row=r, column=4,
+                    value=f'=IFERROR(INDEX({ovr_rng},{pos_ref_sub}),"")')
+        o.alignment = CENTER
+        o.number_format = '0.0'
+        b = ws.cell(row=r, column=5,
+                    value=f'=IFERROR(INDEX({eff_b1_rng},{pos_ref_sub}),"")')
+        b.alignment = CENTER
+        b.number_format = '0.00'
+        ws.cell(row=r, column=6,
+                value=f'=IFERROR(INDEX({class_rng},{pos_ref_sub}),"")').alignment = CENTER
+
+    apply_tier_coloring(ws, f'F{R_SUBS_FIRST}:F{R_SUBS_LAST}')
+
+    # =======================================================================
+    # TACTICAL SUGGESTIONS
+    # =======================================================================
+    th = ws.cell(row=R_TAC_HDR, column=1,
+                 value='TACTICAL SUGGESTIONS - based on squad aggregates')
+    th.font = SECTION_FONT
+    th.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_TAC_HDR, start_column=1,
+                   end_row=R_TAC_HDR, end_column=10)
+
+    tac_headers = ['Metric', 'Squad Value', 'Recommendation', 'Rationale']
+    for i, h in enumerate(tac_headers, 1):
+        ws.cell(row=R_TAC_COL, column=i, value=h)
+    head_row(ws, R_TAC_COL, len(tac_headers))
+
+    def defender_mask_expr() -> str:
+        """1 if player's Best Position is CB/CWP, SB, or WB; else 0."""
+        return (
+            f'(({best_pos_rng}="CB/CWP")+({best_pos_rng}="SB")+'
+            f'({best_pos_rng}="WB"))'
+        )
+
+    def attacker_b1_sum_expr() -> str:
+        """Sum of Effective B1 over attackers (best pos CF/SS/WF) in team."""
+        mask = (
+            f'(({best_pos_rng}="CF")+({best_pos_rng}="SS")+({best_pos_rng}="WF"))'
+        )
+        return f'SUMPRODUCT({team_mask}*{mask}*N(+{eff_b1_rng}))'
+
+    def defender_b1_sum_expr() -> str:
+        mask = defender_mask_expr()
+        return f'SUMPRODUCT({team_mask}*{mask}*N(+{eff_b1_rng}))'
+
+    def wing_count_expr() -> str:
+        """Number of players with wide best positions (WF / SMF)."""
+        return (
+            f'SUMPRODUCT({team_mask}*'
+            f'(({best_pos_rng}="WF")+({best_pos_rng}="SMF")))'
+        )
+
+    def team_avg_expr(stat_rng: str) -> str:
+        return (
+            f'IFERROR(SUMPRODUCT({team_mask}*N(+{stat_rng}))/'
+            f'SUMPRODUCT({team_mask}),0)'
+        )
+
+    def defender_avg_expr(stat_rng: str) -> str:
+        dm = defender_mask_expr()
+        return (
+            f'IFERROR(SUMPRODUCT({team_mask}*{dm}*N(+{stat_rng}))/'
+            f'SUMPRODUCT({team_mask}*{dm}),0)'
+        )
+
+    # --- Row 1: Defensive Line ---
+    r = R_TAC_FIRST
+    ws.cell(row=r, column=1, value='Defensive Line').font = Font(bold=True)
+    def_speed_avg = (
+        f'({defender_avg_expr(topspeed_rng)}+{defender_avg_expr(accel_rng)})/2'
+    )
+    v = ws.cell(row=r, column=2, value=f'={def_speed_avg}')
+    v.number_format = '0.0'
+    v.alignment = CENTER
+    speed_cell = f'B{r}'
+    ws.cell(row=r, column=3, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"-",'
+        f'IF({speed_cell}>=85,"High (70-80)",'
+        f'IF({speed_cell}>=78,"Balanced (50-60)",'
+        f'"Deep (20-40)")))'
+    )).alignment = CENTER
+    ws.cell(row=r, column=4, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"",'
+        f'"Avg defender Top Speed+Acceleration = "&ROUND({speed_cell},0)&". "&'
+        f'IF({speed_cell}>=85,"Fast backs can recover; push the line up.",'
+        f'IF({speed_cell}>=78,"Moderate pace; hold a normal line.",'
+        f'"Slower backs; sit deep to avoid being exposed on the break.")))'
+    )).alignment = LEFT
+
+    # --- Row 2: Pressing ---
+    r += 1
+    ws.cell(row=r, column=1, value='Pressing').font = Font(bold=True)
+    press_score = f'({team_avg_expr(stamina_rng)}+{team_avg_expr(aggression_rng)})/2'
+    v = ws.cell(row=r, column=2, value=f'={press_score}')
+    v.number_format = '0.0'
+    v.alignment = CENTER
+    press_cell = f'B{r}'
+    ws.cell(row=r, column=3, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"-",'
+        f'IF({press_cell}>=80,"High (75-85)",'
+        f'IF({press_cell}>=72,"Medium (50-60)",'
+        f'"Low (30-40)")))'
+    )).alignment = CENTER
+    ws.cell(row=r, column=4, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"",'
+        f'"Avg Stamina+Aggression = "&ROUND({press_cell},0)&". "&'
+        f'IF({press_cell}>=80,"Fit and fierce - press high to force turnovers.",'
+        f'IF({press_cell}>=72,"Moderate engine - selective pressing in own half.",'
+        f'"Low tank - conserve energy; press only around the ball.")))'
+    )).alignment = LEFT
+
+    # --- Row 3: Offside Trap ---
+    r += 1
+    ws.cell(row=r, column=1, value='Offside Trap').font = Font(bold=True)
+    trap_score = (
+        f'({defender_avg_expr(response_rng)}+'
+        f'{defender_avg_expr(teamwork_rng)}+'
+        f'{defender_avg_expr(dline_rng)})/3'
+    )
+    v = ws.cell(row=r, column=2, value=f'={trap_score}')
+    v.number_format = '0.0'
+    v.alignment = CENTER
+    trap_cell = f'B{r}'
+    ws.cell(row=r, column=3, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"-",'
+        f'IF({trap_cell}>=82,"ON (aggressive)",'
+        f'IF({trap_cell}>=75,"Situational",'
+        f'"OFF")))'
+    )).alignment = CENTER
+    ws.cell(row=r, column=4, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"",'
+        f'"Defender Response+Teamwork+D-Line Ctrl avg = "&ROUND({trap_cell},0)&". "&'
+        f'IF({trap_cell}>=82,"Cohesive line can step up in unison.",'
+        f'IF({trap_cell}>=75,"Use only against predictable attackers.",'
+        f'"Risk too high - leave off.")))'
+    )).alignment = LEFT
+
+    # --- Row 4: Attack Strategy ---
+    r += 1
+    ws.cell(row=r, column=1, value='Attack Strategy').font = Font(bold=True)
+    att_sum = attacker_b1_sum_expr()
+    def_sum = defender_b1_sum_expr()
+    # bias = (att_sum - def_sum) normalised; use raw diff for simplicity
+    # Protect divide-by-zero with IFERROR.
+    bias = f'IFERROR(({att_sum}-{def_sum})/SUMPRODUCT({team_mask}),0)'
+    v = ws.cell(row=r, column=2, value=f'={bias}')
+    v.number_format = '0.00'
+    v.alignment = CENTER
+    bias_cell = f'B{r}'
+    ws.cell(row=r, column=3, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"-",'
+        f'IF({bias_cell}>=2,"All-Out Attack",'
+        f'IF({bias_cell}<=-2,"Counter Attack",'
+        f'"Possession / Balanced")))'
+    )).alignment = CENTER
+    ws.cell(row=r, column=4, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"",'
+        f'"Attacker vs defender B1 bias = "&ROUND({bias_cell},1)&". "&'
+        f'IF({bias_cell}>=2,"Attack is your strength - commit bodies forward.",'
+        f'IF({bias_cell}<=-2,"Defence is your strength - sit and spring.",'
+        f'"Even side - keep the ball and pick your moments.")))'
+    )).alignment = LEFT
+
+    # --- Row 5: Attack Width ---
+    r += 1
+    ws.cell(row=r, column=1, value='Attack Width').font = Font(bold=True)
+    wing_cnt = wing_count_expr()
+    v = ws.cell(row=r, column=2, value=f'={wing_cnt}')
+    v.number_format = '0'
+    v.alignment = CENTER
+    wing_cell = f'B{r}'
+    ws.cell(row=r, column=3, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"-",'
+        f'IF({wing_cell}>=4,"Wide",'
+        f'IF({wing_cell}>=2,"Balanced","Narrow")))'
+    )).alignment = CENTER
+    ws.cell(row=r, column=4, value=(
+        f'=IF(SUMPRODUCT({team_mask})=0,"",'
+        f'"Wingers (WF/SMF best pos) in squad = "&{wing_cell}&". "&'
+        f'IF({wing_cell}>=4,"Plenty of wide options - stretch the pitch.",'
+        f'IF({wing_cell}>=2,"Some width - use flanks situationally.",'
+        f'"Few wingers - attack through the middle.")))'
+    )).alignment = LEFT
+
+    # =======================================================================
+    # FORMATION REFERENCE (used by Best XI INDEX lookup)
+    # =======================================================================
+    fh = ws.cell(row=R_FORM_HDR, column=1,
+                 value='FORMATION REFERENCE - slot-by-slot position list')
+    fh.font = SECTION_FONT
+    fh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_FORM_HDR, start_column=1,
+                   end_row=R_FORM_HDR, end_column=12)
+
+    form_col_headers = ['Formation'] + [f'Slot {i}' for i in range(1, 12)]
+    for i, h in enumerate(form_col_headers, 1):
+        ws.cell(row=R_FORM_COL, column=i, value=h)
+    head_row(ws, R_FORM_COL, len(form_col_headers))
+
+    for i, (fname, slots) in enumerate(FORMATIONS.items()):
+        r = R_FORM_FIRST + i
+        ws.cell(row=r, column=1, value=fname).font = Font(bold=True)
+        for j, slot_pos in enumerate(slots):
+            c = ws.cell(row=r, column=2 + j, value=slot_pos)
+            c.alignment = CENTER
+
+    # =======================================================================
+    # MANUAL STARTING XI - admin picks player + position for each slot
+    # =======================================================================
+    R_MXI_HDR = R_FORM_LAST + 2           # 82
+    R_MXI_COL = R_MXI_HDR + 2             # 84
+    R_MXI_FIRST = R_MXI_COL + 1           # 85
+    R_MXI_LAST = R_MXI_FIRST + 10         # 95
+    R_FORM_DETECT = R_MXI_LAST + 2        # 97
+    R_MXI_COUNTS = R_FORM_DETECT + 1      # 98
+
+    mh = ws.cell(row=R_MXI_HDR, column=1,
+                 value='MANUAL STARTING XI - admin picks player and position')
+    mh.font = SECTION_FONT
+    mh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_MXI_HDR, start_column=1,
+                   end_row=R_MXI_HDR, end_column=10)
+    ws.cell(row=R_MXI_HDR + 1, column=1, value=(
+        'Player dropdown pulls from current squad. Position dropdown = 16 '
+        'PES6 positions. Slot B1 = player\'s B1 at the picked position. '
+        'Validation flags duplicates, missing fields, and PES6 position '
+        'limits (1 GK, 1 CWP, 1 of each LB/RB/LWB/RWB/LMF/RMF/LWF/RWF, max '
+        '6 per category).'
+    )).font = Font(italic=True, color='808080')
+    ws.merge_cells(start_row=R_MXI_HDR + 1, start_column=1,
+                   end_row=R_MXI_HDR + 1, end_column=10)
+
+    mxi_headers = ['Slot', 'Player', 'Position', 'Slot B1', 'OVR', 'Class',
+                   'Best Pos', 'Validation']
+    for i, h in enumerate(mxi_headers, 1):
+        ws.cell(row=R_MXI_COL, column=i, value=h)
+    head_row(ws, R_MXI_COL, len(mxi_headers))
+
+    # Squad name range (source of player dropdown).
+    squad_names_rng = f'$B${R_SQUAD_FIRST}:$B${R_SQUAD_LAST}'
+    # Full players Name range (for MATCH to get player row in Players sheet).
+    mxi_player_rng = f'$B${R_MXI_FIRST}:$B${R_MXI_LAST}'
+    mxi_pos_rng = f'$C${R_MXI_FIRST}:$C${R_MXI_LAST}'
+
+    player_dv = DataValidation(
+        type='list',
+        formula1=f'={squad_names_rng}',
+        allow_blank=True,
+    )
+    ws.add_data_validation(player_dv)
+    player_dv.add(f'B{R_MXI_FIRST}:B{R_MXI_LAST}')
+
+    position_dv = DataValidation(
+        type='list',
+        formula1='"' + ','.join(POSITIONS_FULL) + '"',
+        allow_blank=True,
+    )
+    ws.add_data_validation(position_dv)
+    position_dv.add(f'C{R_MXI_FIRST}:C{R_MXI_LAST}')
+
+    # Helper to compute slot B1 for a given player_row and position cell.
+    def slot_b1_for_player_expr(player_row_cell: str, position_cell: str) -> str:
+        col_to_positions: dict[str, list[str]] = {}
+        for pos, b1_col in POS_TO_B1COL.items():
+            col_to_positions.setdefault(b1_col, []).append(pos)
+        parts = []
+        for b1_col, positions in col_to_positions.items():
+            pos_match = '+'.join(f'({position_cell}="{p}")' for p in positions)
+            idx = f'IFERROR(INDEX({players_range(b1_col)},{player_row_cell}),0)'
+            parts.append(f'({pos_match})*{idx}')
+        return '(' + '+'.join(parts) + ')'
+
+    # Single-side positions (LB/RB/LWB/RWB/LMF/RMF/LWF/RWF) - for "two on
+    # same side" check.
+    side_positions = sorted(POSITION_SINGLE_SLOT - {'GK', 'CWP'})
+    side_check_or = '+'.join(f'({{pos}}="{p}")' for p in side_positions)
+
+    for i in range(11):
+        r = R_MXI_FIRST + i
+        slot_num = i + 1
+        player_ref = f'$B${r}'
+        pos_ref = f'$C${r}'
+
+        ws.cell(row=r, column=1, value=slot_num).alignment = CENTER
+        # Player/Position cells start blank; dropdowns are already attached.
+        ws.cell(row=r, column=2, value=None).alignment = LEFT
+        ws.cell(row=r, column=3, value=None).alignment = CENTER
+
+        # Player row in Players sheet (used by multiple lookups).
+        player_row_expr = f'IFERROR(MATCH({player_ref},{name_rng},0),"")'
+
+        # Slot B1 at chosen position.
+        b1_expr = slot_b1_for_player_expr(player_row_expr, pos_ref)
+        b1_cell = ws.cell(row=r, column=4, value=(
+            f'=IF(OR({player_ref}="",{pos_ref}=""),"",{b1_expr})'
+        ))
+        b1_cell.alignment = CENTER
+        b1_cell.number_format = '0.00'
+
+        # OVR, Class, Best Pos (natural - independent of position slot).
+        ws.cell(row=r, column=5, value=(
+            f'=IF({player_ref}="","",IFERROR(INDEX({ovr_rng},{player_row_expr}),""))'
+        )).alignment = CENTER
+        ws.cell(row=r, column=5).number_format = '0.0'
+        ws.cell(row=r, column=6, value=(
+            f'=IF({player_ref}="","",IFERROR(INDEX({class_rng},{player_row_expr}),""))'
+        )).alignment = CENTER
+        ws.cell(row=r, column=7, value=(
+            f'=IF({player_ref}="","",IFERROR(INDEX({best_pos_rng},{player_row_expr}),""))'
+        )).alignment = CENTER
+
+        # Validation: first failure wins.
+        side_or = side_check_or.replace('{pos}', pos_ref)
+        val_formula = (
+            f'=IF({player_ref}="","",'
+            f'IF(COUNTIF({squad_names_rng},{player_ref})=0,"Not in squad",'
+            f'IF(COUNTIF({mxi_player_rng},{player_ref})>1,"Duplicate player",'
+            f'IF({pos_ref}="","Position missing",'
+            f'IF(AND({pos_ref}="GK",COUNTIF({mxi_pos_rng},"GK")>1),"Multiple GKs",'
+            f'IF(AND({pos_ref}="CWP",COUNTIF({mxi_pos_rng},"CWP")>1),"Multiple CWPs",'
+            f'IF(AND(({side_or})>0,COUNTIF({mxi_pos_rng},{pos_ref})>1),'
+            f'"Two on same side ("&{pos_ref}&")",'
+            f'"OK")))))))'
+        )
+        ws.cell(row=r, column=8, value=val_formula).alignment = CENTER
+
+    apply_tier_coloring(ws, f'F{R_MXI_FIRST}:F{R_MXI_LAST}')
+
+    # --- Detected Formation + category counts ---
+    def_count_expr = (
+        f'(COUNTIF({mxi_pos_rng},"CB")+COUNTIF({mxi_pos_rng},"CWP")+'
+        f'COUNTIF({mxi_pos_rng},"LB")+COUNTIF({mxi_pos_rng},"RB")+'
+        f'COUNTIF({mxi_pos_rng},"LWB")+COUNTIF({mxi_pos_rng},"RWB"))'
+    )
+    dmf_count_expr = f'COUNTIF({mxi_pos_rng},"DMF")'
+    mid_count_expr = (
+        f'(COUNTIF({mxi_pos_rng},"CMF")+COUNTIF({mxi_pos_rng},"LMF")+'
+        f'COUNTIF({mxi_pos_rng},"RMF"))'
+    )
+    amf_count_expr = f'COUNTIF({mxi_pos_rng},"AMF")'
+    att_count_expr = (
+        f'(COUNTIF({mxi_pos_rng},"LWF")+COUNTIF({mxi_pos_rng},"RWF")+'
+        f'COUNTIF({mxi_pos_rng},"SS")+COUNTIF({mxi_pos_rng},"CF"))'
+    )
+    gk_count_expr = f'COUNTIF({mxi_pos_rng},"GK")'
+    all_def_expr = def_count_expr
+    all_mid_expr = f'({dmf_count_expr}+{mid_count_expr}+{amf_count_expr})'
+    all_att_expr = att_count_expr
+
+    # Formation string: join non-zero segments with "-"
+    # Layers: backline | DMF | Mid | AMF | Fwd
+    def seg(expr):
+        return f'IF({expr}>0,{expr}&"-","")'
+    segs = (
+        f'{seg(def_count_expr)}&{seg(dmf_count_expr)}&'
+        f'{seg(mid_count_expr)}&{seg(amf_count_expr)}&'
+        f'{seg(att_count_expr)}'
+    )
+    # Strip trailing "-" if non-empty.
+    form_string_formula = (
+        f'=IF(LEN({segs})=0,"",LEFT({segs},LEN({segs})-1))'
+    )
+
+    lbl = ws.cell(row=R_FORM_DETECT, column=1, value='Detected Formation:')
+    lbl.font = Font(bold=True)
+    lbl.alignment = Alignment(horizontal='right')
+    fdetect = ws.cell(row=R_FORM_DETECT, column=2, value=form_string_formula)
+    fdetect.font = Font(bold=True, color='1F4E78', size=12)
+    fdetect.alignment = LEFT
+
+    lbl2 = ws.cell(row=R_MXI_COUNTS, column=1, value='Category counts:')
+    lbl2.font = Font(bold=True)
+    lbl2.alignment = Alignment(horizontal='right')
+    ws.cell(row=R_MXI_COUNTS, column=2, value=f'=\"GK: \"&{gk_count_expr}').alignment = LEFT
+    ws.cell(row=R_MXI_COUNTS, column=3, value=f'=\"Defenders: \"&{all_def_expr}').alignment = LEFT
+    ws.cell(row=R_MXI_COUNTS, column=4, value=f'=\"Midfielders: \"&{all_mid_expr}').alignment = LEFT
+    ws.cell(row=R_MXI_COUNTS, column=5, value=f'=\"Attackers: \"&{all_att_expr}').alignment = LEFT
+    ws.cell(row=R_MXI_COUNTS, column=6, value=(
+        f'=IF({gk_count_expr}>1,"[Multi GK]",'
+        f'IF({all_def_expr}>{CATEGORY_MAX},"[Too many defenders]",'
+        f'IF({all_mid_expr}>{CATEGORY_MAX},"[Too many midfielders]",'
+        f'IF({all_att_expr}>{CATEGORY_MAX},"[Too many attackers]",""))))'
+    )).font = Font(bold=True, color='C00000')
+
+    # =======================================================================
+    # MANUAL SUBSTITUTES
+    # =======================================================================
+    R_MSUBS_HDR = R_MXI_COUNTS + 2          # 100
+    R_MSUBS_COL = R_MSUBS_HDR + 1           # 101
+    R_MSUBS_FIRST = R_MSUBS_COL + 1         # 102
+    R_MSUBS_LAST = R_MSUBS_FIRST + TACTICAL_MENTOR_SUBS_MANUAL_ROWS - 1  # 108
+
+    mshh = ws.cell(row=R_MSUBS_HDR, column=1,
+                   value='MANUAL SUBSTITUTES - 7 slots, player only (no position)')
+    mshh.font = SECTION_FONT
+    mshh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_MSUBS_HDR, start_column=1,
+                   end_row=R_MSUBS_HDR, end_column=10)
+
+    ms_headers = ['#', 'Player', 'Best Pos', 'OVR', 'Eff B1', 'Class', 'Validation']
+    for i, h in enumerate(ms_headers, 1):
+        ws.cell(row=R_MSUBS_COL, column=i, value=h)
+    head_row(ws, R_MSUBS_COL, len(ms_headers))
+
+    msub_player_rng = f'$B${R_MSUBS_FIRST}:$B${R_MSUBS_LAST}'
+    msub_dv = DataValidation(
+        type='list',
+        formula1=f'={squad_names_rng}',
+        allow_blank=True,
+    )
+    ws.add_data_validation(msub_dv)
+    msub_dv.add(f'B{R_MSUBS_FIRST}:B{R_MSUBS_LAST}')
+
+    for i in range(TACTICAL_MENTOR_SUBS_MANUAL_ROWS):
+        r = R_MSUBS_FIRST + i
+        sub_num = i + 1
+        player_ref = f'$B${r}'
+        player_row_expr = f'IFERROR(MATCH({player_ref},{name_rng},0),"")'
+
+        ws.cell(row=r, column=1, value=f'S{sub_num}').alignment = CENTER
+        ws.cell(row=r, column=2, value=None).alignment = LEFT
+        ws.cell(row=r, column=3, value=(
+            f'=IF({player_ref}="","",IFERROR(INDEX({best_pos_rng},{player_row_expr}),""))'
+        )).alignment = CENTER
+        o = ws.cell(row=r, column=4, value=(
+            f'=IF({player_ref}="","",IFERROR(INDEX({ovr_rng},{player_row_expr}),""))'
+        ))
+        o.alignment = CENTER
+        o.number_format = '0.0'
+        b = ws.cell(row=r, column=5, value=(
+            f'=IF({player_ref}="","",IFERROR(INDEX({eff_b1_rng},{player_row_expr}),""))'
+        ))
+        b.alignment = CENTER
+        b.number_format = '0.00'
+        ws.cell(row=r, column=6, value=(
+            f'=IF({player_ref}="","",IFERROR(INDEX({class_rng},{player_row_expr}),""))'
+        )).alignment = CENTER
+
+        # Sub validation: not in squad, duplicate sub, or duplicate with XI.
+        val_formula = (
+            f'=IF({player_ref}="","",'
+            f'IF(COUNTIF({squad_names_rng},{player_ref})=0,"Not in squad",'
+            f'IF(COUNTIF({msub_player_rng},{player_ref})>1,"Duplicate sub",'
+            f'IF(COUNTIF({mxi_player_rng},{player_ref})>0,"Already in XI",'
+            f'"OK"))))'
+        )
+        ws.cell(row=r, column=7, value=val_formula).alignment = CENTER
+
+    apply_tier_coloring(ws, f'F{R_MSUBS_FIRST}:F{R_MSUBS_LAST}')
+
+    # =======================================================================
+    # TACTICS SELECTION (up to 4) + SLIDER SUGGESTIONS (0-20)
+    # =======================================================================
+    R_TAC_SEL_HDR = R_MSUBS_LAST + 2        # 110
+    R_TAC_SEL_FIRST = R_TAC_SEL_HDR + 2     # 112
+    R_TAC_SEL_LAST = R_TAC_SEL_FIRST + 3    # 115 (4 tactic slots)
+
+    tsh = ws.cell(row=R_TAC_SEL_HDR, column=1,
+                  value='TACTICS SELECTION - pick up to 4 PES6 team-style presets')
+    tsh.font = SECTION_FONT
+    tsh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_TAC_SEL_HDR, start_column=1,
+                   end_row=R_TAC_SEL_HDR, end_column=10)
+    ws.cell(row=R_TAC_SEL_HDR + 1, column=1,
+            value=('Leave blank to disable a slot. Each chosen tactic '
+                   'shifts the slider values and the per-player B1 modifiers.')
+            ).font = Font(italic=True, color='808080')
+    ws.merge_cells(start_row=R_TAC_SEL_HDR + 1, start_column=1,
+                   end_row=R_TAC_SEL_HDR + 1, end_column=10)
+
+    tac_dv = DataValidation(
+        type='list',
+        formula1='"' + ','.join(TACTIC_PRESETS) + '"',
+        allow_blank=True,
+    )
+    ws.add_data_validation(tac_dv)
+    tac_dv.add(f'B{R_TAC_SEL_FIRST}:B{R_TAC_SEL_LAST}')
+
+    for i in range(4):
+        r = R_TAC_SEL_FIRST + i
+        lbl = ws.cell(row=r, column=1, value=f'Tactic {i + 1}:')
+        lbl.font = Font(bold=True)
+        lbl.alignment = Alignment(horizontal='right')
+        tc = ws.cell(row=r, column=2, value=None)
+        tc.alignment = CENTER
+        tc.fill = INPUT_FILL
+        tc.font = Font(bold=True)
+
+    tactic_cells = [f'$B${R_TAC_SEL_FIRST + i}' for i in range(4)]
+
+    # --- Sliders ---
+    R_SLIDER_HDR = R_TAC_SEL_LAST + 2       # 117
+    R_SLIDER_COL = R_SLIDER_HDR + 1         # 118
+    R_SLIDER_FIRST = R_SLIDER_COL + 1       # 119
+    SLIDER_NAMES = ['Defensive Line', 'Pressing', 'Compactness',
+                    'Width', 'Player Support', 'Position Switch']
+    R_SLIDER_LAST = R_SLIDER_FIRST + len(SLIDER_NAMES) - 1  # 124
+
+    slh = ws.cell(row=R_SLIDER_HDR, column=1,
+                  value='SLIDER SUGGESTIONS (0-20 PES6 scale)')
+    slh.font = SECTION_FONT
+    slh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_SLIDER_HDR, start_column=1,
+                   end_row=R_SLIDER_HDR, end_column=10)
+
+    slider_headers = ['Slider', 'Value (0-20)', 'Direction', 'Rationale']
+    for i, h in enumerate(slider_headers, 1):
+        ws.cell(row=R_SLIDER_COL, column=i, value=h)
+    head_row(ws, R_SLIDER_COL, len(slider_headers))
+
+    for idx, slider in enumerate(SLIDER_NAMES):
+        r = R_SLIDER_FIRST + idx
+        deltas = TACTIC_SLIDER_DELTAS.get(slider, {})
+        # Build SUMPRODUCT-style delta: for each tactic slot, if it matches
+        # a tactic with a delta, add that delta.
+        delta_terms = []
+        for tac, d in deltas.items():
+            for tc in tactic_cells:
+                delta_terms.append(f'({tc}="{tac}")*({d})')
+        delta_sum = '(' + '+'.join(delta_terms) + ')' if delta_terms else '0'
+        val_formula = f'=MAX(0,MIN(20,10+{delta_sum}))'
+
+        ws.cell(row=r, column=1, value=slider).font = Font(bold=True)
+        v = ws.cell(row=r, column=2, value=val_formula)
+        v.alignment = CENTER
+        v.number_format = '0'
+
+        v_ref = f'B{r}'
+        # Direction hint based on value vs 10 (neutral).
+        dir_formula = (
+            f'=IF({v_ref}>=14,"HIGH",IF({v_ref}>=8,"MEDIUM","LOW"))'
+        )
+        ws.cell(row=r, column=3, value=dir_formula).alignment = CENTER
+        # Rationale lists contributing tactics and their deltas.
+        # Generate text like "Frontline Pressure (+8), Counter Attack (-3)"
+        rationale_parts = []
+        for tac, d in deltas.items():
+            sign = '+' if d > 0 else ''
+            rationale_parts.append(
+                f'IF(OR({",".join(f"{tc}=\"{tac}\"" for tc in tactic_cells)}),'
+                f'"{tac} ({sign}{d})",'
+                f'"")'
+            )
+        if rationale_parts:
+            # Non-empty strings joined with ", ". TEXTJOIN is Excel 2019+ and
+            # LibreOffice 5.2+, but openpyxl omits the _xlfn. prefix xlsx
+            # expects - prefixing it explicitly keeps both apps happy.
+            rat_formula = (
+                f'=_xlfn.TEXTJOIN(", ",TRUE,'
+                + ','.join(rationale_parts)
+                + ')'
+            )
+        else:
+            rat_formula = '=""'
+        rat_cell = ws.cell(row=r, column=4, value=rat_formula)
+        rat_cell.font = Font(italic=True, color='808080')
+        rat_cell.alignment = LEFT
+
+    # =======================================================================
+    # EFFICIENCY PANEL
+    # =======================================================================
+    R_EFF_HDR = R_SLIDER_LAST + 2           # 126
+    R_EFF_SUM_LBL = R_EFF_HDR + 1           # 127
+    R_EFF_SUM_VAL = R_EFF_SUM_LBL + 1       # 128
+    R_EFF_PP_HDR = R_EFF_SUM_VAL + 2        # 130
+    R_EFF_PP_COL = R_EFF_PP_HDR + 1         # 131
+    R_EFF_PP_FIRST = R_EFF_PP_COL + 1       # 132
+    R_EFF_PP_LAST = R_EFF_PP_FIRST + 10     # 142
+
+    eh = ws.cell(row=R_EFF_HDR, column=1,
+                 value='EFFICIENCY PANEL - how your tactics change squad B1')
+    eh.font = SECTION_FONT
+    eh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_EFF_HDR, start_column=1,
+                   end_row=R_EFF_HDR, end_column=10)
+
+    # Summary row labels
+    for i, h in enumerate(['Baseline XI B1', 'With Tactics B1', 'Change %',
+                           'Overall Rating'], 1):
+        c = ws.cell(row=R_EFF_SUM_LBL, column=i, value=h)
+        c.font = Font(bold=True)
+        c.alignment = CENTER
+
+    # Per-player impact table
+    pp_headers = ['Slot', 'Player', 'Position', 'Category', 'Baseline B1',
+                  'Total Mod %', 'Adjusted B1', 'Delta']
+    for i, h in enumerate(pp_headers, 1):
+        ws.cell(row=R_EFF_PP_COL, column=i, value=h)
+    head_row(ws, R_EFF_PP_COL, len(pp_headers))
+
+    # Reference ranges for the modifier table (defined below).
+    R_MOD_HDR = R_EFF_PP_LAST + 2           # 144
+    R_MOD_COL = R_MOD_HDR + 1               # 145
+    R_MOD_FIRST = R_MOD_COL + 1             # 146
+    R_MOD_LAST = R_MOD_FIRST + len(TACTIC_PRESETS) - 1  # 155
+
+    mod_tac_names_rng = f'$A${R_MOD_FIRST}:$A${R_MOD_LAST}'
+    # Category headers are in columns B..(B+11-1) = B..L at row R_MOD_COL
+    mod_cat_headers_rng = (
+        f'$B${R_MOD_COL}:$L${R_MOD_COL}'
+    )
+    mod_table_rng = f'$B${R_MOD_FIRST}:$L${R_MOD_LAST}'
+
+    # Per-player impact rows reference XI rows directly.
+    for i in range(11):
+        r = R_EFF_PP_FIRST + i
+        xi_r = R_MXI_FIRST + i
+        player_ref = f'$B${xi_r}'
+        pos_ref = f'$C${xi_r}'
+        baseline_b1_ref = f'$D${xi_r}'
+
+        ws.cell(row=r, column=1, value=i + 1).alignment = CENTER
+        ws.cell(row=r, column=2, value=f'=IF({player_ref}="","",{player_ref})').alignment = LEFT
+        ws.cell(row=r, column=3, value=f'=IF({pos_ref}="","",{pos_ref})').alignment = CENTER
+
+        # Category from position.
+        cat_formula = (
+            f'=IF({pos_ref}="","",'
+            + ''.join(
+                f'IF({pos_ref}="{p}","{POSITION_TO_CATEGORY[p]}",'
+                for p in POSITIONS_FULL
+            )
+            + '""'
+            + ')' * len(POSITIONS_FULL)
+            + ')'
+        )
+        ws.cell(row=r, column=4, value=cat_formula).alignment = CENTER
+
+        baseline_cell = f'E{r}'
+        ws.cell(row=r, column=5, value=(
+            f'=IF({baseline_b1_ref}="","",{baseline_b1_ref})'
+        )).alignment = CENTER
+        ws.cell(row=r, column=5).number_format = '0.00'
+
+        # Total modifier % = sum over 4 tactic slots of
+        # INDEX(mod_table, MATCH(tactic, tac_names, 0), MATCH(cat, cat_headers, 0))
+        cat_ref = f'$D${r}'
+        mod_terms = []
+        for tc in tactic_cells:
+            term = (
+                f'IFERROR(INDEX({mod_table_rng},'
+                f'MATCH({tc},{mod_tac_names_rng},0),'
+                f'MATCH({cat_ref},{mod_cat_headers_rng},0)),0)'
+            )
+            mod_terms.append(term)
+        mod_sum_expr = '(' + '+'.join(mod_terms) + ')'
+        mod_cell = ws.cell(row=r, column=6, value=(
+            f'=IF(OR({player_ref}="",{pos_ref}=""),"",{mod_sum_expr})'
+        ))
+        mod_cell.alignment = CENTER
+        mod_cell.number_format = '0'
+
+        mod_ref = f'F{r}'
+        adj_b1_formula = (
+            f'=IF(OR({baseline_b1_ref}="",{mod_ref}=""),"",'
+            f'{baseline_b1_ref}*(1+{mod_ref}/100))'
+        )
+        adj_cell = ws.cell(row=r, column=7, value=adj_b1_formula)
+        adj_cell.alignment = CENTER
+        adj_cell.number_format = '0.00'
+
+        delta_cell = ws.cell(row=r, column=8, value=(
+            f'=IF(OR({baseline_b1_ref}="",G{r}=""),"",G{r}-{baseline_b1_ref})'
+        ))
+        delta_cell.alignment = CENTER
+        delta_cell.number_format = '+0.00;-0.00;0.00'
+
+    # Summary row values
+    pp_baseline_rng = f'$E${R_EFF_PP_FIRST}:$E${R_EFF_PP_LAST}'
+    pp_adj_rng = f'$G${R_EFF_PP_FIRST}:$G${R_EFF_PP_LAST}'
+    baseline_sum_formula = (
+        f'=IFERROR(SUMPRODUCT(N(+{pp_baseline_rng})),0)'
+    )
+    adj_sum_formula = (
+        f'=IFERROR(SUMPRODUCT(N(+{pp_adj_rng})),0)'
+    )
+    bsum = ws.cell(row=R_EFF_SUM_VAL, column=1, value=baseline_sum_formula)
+    bsum.number_format = '0.00'
+    bsum.alignment = CENTER
+    asum = ws.cell(row=R_EFF_SUM_VAL, column=2, value=adj_sum_formula)
+    asum.number_format = '0.00'
+    asum.alignment = CENTER
+    a_ref = f'A{R_EFF_SUM_VAL}'
+    b_ref = f'B{R_EFF_SUM_VAL}'
+    pct = ws.cell(row=R_EFF_SUM_VAL, column=3, value=(
+        f'=IFERROR(({b_ref}-{a_ref})/{a_ref}*100,0)'
+    ))
+    pct.number_format = '+0.0"%";-0.0"%";0.0"%"'
+    pct.alignment = CENTER
+    rating_formula = (
+        f'=IFERROR(IF({a_ref}=0,"-",'
+        f'IF(({b_ref}-{a_ref})/{a_ref}*100>=5,"Excellent fit",'
+        f'IF(({b_ref}-{a_ref})/{a_ref}*100>=2,"Good fit",'
+        f'IF(({b_ref}-{a_ref})/{a_ref}*100>=-2,"Neutral",'
+        f'IF(({b_ref}-{a_ref})/{a_ref}*100>=-5,"Slight misfit",'
+        f'"Bad fit"))))),"-")'
+    )
+    rat = ws.cell(row=R_EFF_SUM_VAL, column=4, value=rating_formula)
+    rat.font = Font(bold=True)
+    rat.alignment = CENTER
+
+    # =======================================================================
+    # TACTIC MODIFIER TABLE (reference; editable)
+    # =======================================================================
+    mhh = ws.cell(row=R_MOD_HDR, column=1,
+                  value='TACTIC MODIFIER TABLE (% applied to slot B1; admin-editable)')
+    mhh.font = SECTION_FONT
+    mhh.fill = SECTION_FILL
+    ws.merge_cells(start_row=R_MOD_HDR, start_column=1,
+                   end_row=R_MOD_HDR, end_column=12)
+
+    mod_col_headers = ['Tactic'] + POSITION_CATEGORIES
+    for i, h in enumerate(mod_col_headers, 1):
+        ws.cell(row=R_MOD_COL, column=i, value=h)
+    head_row(ws, R_MOD_COL, len(mod_col_headers))
+
+    for i, tactic in enumerate(TACTIC_PRESETS):
+        r = R_MOD_FIRST + i
+        ws.cell(row=r, column=1, value=tactic).font = Font(bold=True)
+        mods = TACTIC_MODIFIERS.get(tactic, {})
+        for j, cat in enumerate(POSITION_CATEGORIES):
+            val = mods.get(cat, 0)
+            c = ws.cell(row=r, column=2 + j, value=val)
+            c.alignment = CENTER
+            # Positive green, negative red (visual cue).
+            if isinstance(val, (int, float)) and val > 0:
+                c.font = Font(color='375623', bold=True)
+            elif isinstance(val, (int, float)) and val < 0:
+                c.font = Font(color='C00000', bold=True)
+
+    # =======================================================================
+    # FREEZE + WIDTHS
+    # =======================================================================
+    ws.freeze_panes = f'A{R_SQUAD_FIRST}'
+
+    widths = {
+        1: 10, 2: 22, 3: 12, 4: 9, 5: 10, 6: 8, 7: 11, 8: 18, 9: 10,
+        10: 7, 11: 9, 12: 8, 13: 8, 14: 8, 15: 8, 16: 8, 17: 8, 18: 8,
+        19: 8, 20: 8,
+    }
+    for col, w in widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -1390,6 +2651,9 @@ def main() -> int:
 
     print("Building Player Changes...")
     build_player_changes(wb.create_sheet('Player Changes'))
+
+    print("Building Tactical Mentor...")
+    build_tactical_mentor(wb.create_sheet('Tactical Mentor'))
 
     print(f"Saving {OUT}...")
     wb.save(OUT)
