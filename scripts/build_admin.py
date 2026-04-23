@@ -178,6 +178,11 @@ LOTTERY_WEIGHTS = {'A': 1, 'B': 2, 'C': 4, 'D': 8}
 # Blank rows to seed in Season Results for admin entry.
 SEASON_RESULTS_BLANK_ROWS = 200
 
+# Per-season team stats columns in Season Results, between League Finish and
+# the cup columns. Integer values entered by admin each season. Career Summary
+# aggregates these across all seasons.
+SEASON_STATS_COLS = ['W', 'D', 'L', 'GF', 'GA', 'YC', 'RC']
+
 # Blank rows to seed in Player Changes log for admin entry.
 # Log data rows: 7 to 6 + PLAYER_CHANGES_LOG_ROWS. Must match the hardcoded
 # range in effective_club_formula() in admin_tool_builder.py.
@@ -435,11 +440,12 @@ def build_readme(ws) -> None:
         ('7. Managers', 'Roster: manager <-> team <-> league <-> initial tier. Source of truth.'),
         ('8. Competitions', 'League, PL, Cup, Europa/Conference, Friendly, SP-World Cup with importance.'),
         ('9. Expectations', 'Per-manager expected league finish (quartile), admin-overridable.'),
-        ('10. Season Results', 'ADMIN DATA ENTRY: one row per manager per season with final placements.'),
+        ('10. Season Results', 'ADMIN DATA ENTRY: one row per manager per season. League Finish + per-season team stats (W / D / L / GF / GA / Yellow / Red) + cup results + Outcome. Append-only; feeds Tier Movement and Career Summary.'),
         ('11. Tier Movement', 'Auto-computed: compares actual vs expected, outputs new tier for next draft.'),
         ('12. Draft Order', 'NBA-style lottery weights by new tier. Admin runs draw, fills Actual Pick.'),
-        ('13. Player Changes', 'ADMIN OVERRIDE: stage transfers / drafts / arrangements. Apply Changes toggle makes Clubs and Team Composition reflect the new rosters.'),
-        ('14. Tactical Mentor', 'Dynamic scouting + planner. Top section: type team + formation, see squad, greedy Best XI, subs, tactical slider suggestions. Lower section: manually pick your XI (player + PES6 position each), choose up to 4 tactic presets, get PES6-style 0-20 slider values and a per-player B1 efficiency panel.'),
+        ('13. Career Summary', 'Multi-season aggregates per manager (seasons, promotions, avg/best/worst finish, totals for W/D/L/GF/GA/GD/YC/RC, titles per cup). All formula-driven from Season Results.'),
+        ('14. Player Changes', 'ADMIN OVERRIDE: stage transfers / drafts / arrangements. Apply Changes toggle makes Clubs and Team Composition reflect the new rosters.'),
+        ('15. Tactical Mentor', 'Dynamic scouting + planner. Top section: type team + formation, see squad, greedy Best XI, subs, tactical slider suggestions. Lower section: manually pick your XI (player + PES6 position each), choose up to 4 tactic presets, get PES6-style 0-20 slider values and a per-player B1 efficiency panel.'),
         ('', ''),
         ('TIER MOVEMENT LOGIC', 'h'),
         ('Bands', 'Outcome-based: Champion (top 3), Playoff (4-8), Mid-safe (middle), Playout (bottom 4).'),
@@ -991,16 +997,22 @@ def build_season_results(ws) -> None:
     ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
     ws.merge_cells('A1:K1')
     ws['A2'] = ("One row per manager per season. League Finish = final rank "
-                "after playoff/playout. Cup columns use the dropdown list. "
-                "Outcome = Promoted / Relegated / Stayed (after playoff / "
-                "playout KO resolves). Tier Movement auto-uses the LATEST "
-                "Season for each manager.")
+                "after playoff/playout. Per-season team stats (W/D/L/GF/GA/YC/"
+                "RC) are integers entered by admin; they feed Career Summary. "
+                "Cup columns use the dropdown list. Outcome = Promoted / "
+                "Relegated / Stayed (after playoff / playout KO resolves). "
+                "Tier Movement auto-uses the LATEST Season for each manager.")
     ws['A2'].font = Font(italic=True, color='808080')
     ws.merge_cells('A2:K2')
 
     cup_names = [c for c, _, _ in COMPETITIONS if c not in ('Liga 1', 'Liga 2')]
-    # Layout: Season | Manager | League Finish | <cup cols...> | Outcome
-    headers = ['Season', 'Manager', 'League Finish'] + cup_names + ['Outcome']
+    # Layout: Season | Manager | League Finish | <stats cols> | <cup cols> | Outcome
+    headers = (
+        ['Season', 'Manager', 'League Finish']
+        + list(SEASON_STATS_COLS)
+        + cup_names
+        + ['Outcome']
+    )
     for i, h in enumerate(headers, 1):
         ws.cell(row=4, column=i, value=h)
     head_row(ws, 4, len(headers))
@@ -1008,7 +1020,10 @@ def build_season_results(ws) -> None:
     data_first = 5
     data_last = 4 + SEASON_RESULTS_BLANK_ROWS
     mgr_last = 4 + len(MANAGERS)
-    outcome_col = 3 + len(cup_names) + 1  # column index for Outcome
+    stats_count = len(SEASON_STATS_COLS)
+    first_stats_col = 4                                  # col D
+    first_cup_col = first_stats_col + stats_count        # col K (first cup)
+    outcome_col = first_cup_col + len(cup_names)         # column index for Outcome
 
     # Manager dropdown from Managers sheet
     mgr_dv = DataValidation(
@@ -1026,7 +1041,7 @@ def build_season_results(ws) -> None:
         allow_blank=True,
     )
     ws.add_data_validation(result_dv)
-    for ci in range(4, 4 + len(cup_names)):
+    for ci in range(first_cup_col, first_cup_col + len(cup_names)):
         col = get_column_letter(ci)
         result_dv.add(f'{col}{data_first}:{col}{data_last}')
 
@@ -1040,12 +1055,20 @@ def build_season_results(ws) -> None:
     out_letter = get_column_letter(outcome_col)
     outcome_dv.add(f'{out_letter}{data_first}:{out_letter}{data_last}')
 
+    # Integer number format for stats cells
+    for ci in range(first_stats_col, first_stats_col + stats_count):
+        col = get_column_letter(ci)
+        for r in range(data_first, data_last + 1):
+            ws.cell(row=r, column=ci).number_format = '0'
+
     ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{data_last}"
     ws.freeze_panes = 'C5'
     ws.column_dimensions['A'].width = 8
     ws.column_dimensions['B'].width = 14
     ws.column_dimensions['C'].width = 13
-    for ci in range(4, 4 + len(cup_names)):
+    for ci in range(first_stats_col, first_stats_col + stats_count):
+        ws.column_dimensions[get_column_letter(ci)].width = 6
+    for ci in range(first_cup_col, first_cup_col + len(cup_names)):
         ws.column_dimensions[get_column_letter(ci)].width = 13
     ws.column_dimensions[out_letter].width = 12
 
@@ -1090,15 +1113,18 @@ def build_tier_movement(ws) -> None:
     sr_finish = f"'Season Results'!$C${sr_first}:$C${sr_last}"
 
     cup_names = [c for c, _, _ in COMPETITIONS if c not in ('Liga 1', 'Liga 2')]
+    # Season Results layout: A=Season, B=Manager, C=Finish, then stats
+    # columns (W/D/L/GF/GA/YC/RC), then cup columns, then Outcome.
+    sr_first_cup_col = 3 + len(SEASON_STATS_COLS) + 1  # 1-based index
     sr_cup_rngs = []
     for i in range(len(cup_names)):
-        col = get_column_letter(4 + i)
+        col = get_column_letter(sr_first_cup_col + i)
         sr_cup_rngs.append(
             f"'Season Results'!${col}${sr_first}:${col}${sr_last}"
         )
 
     # Outcome column in Season Results (after the cup columns).
-    outcome_col_idx = 3 + len(cup_names) + 1
+    outcome_col_idx = sr_first_cup_col + len(cup_names)
     outcome_col_letter = get_column_letter(outcome_col_idx)
     sr_outcome = f"'Season Results'!${outcome_col_letter}${sr_first}:${outcome_col_letter}${sr_last}"
 
@@ -1312,6 +1338,143 @@ def build_draft_order(ws) -> None:
 
     ws.freeze_panes = 'A5'
     widths = [14, 26, 8, 10, 14, 13, 12]
+    for col, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+
+def build_career_summary(ws) -> None:
+    ws['A1'] = 'CAREER SUMMARY - multi-season aggregates per manager'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws.merge_cells('A1:J1')
+    ws['A2'] = ("All-time totals computed live from Season Results. No manual "
+                "entry. Blank where no seasons are logged. Grows automatically "
+                "as admin appends new seasons - use this to track trajectory "
+                "across the full patch run.")
+    ws['A2'].font = Font(italic=True, color='808080')
+    ws.merge_cells('A2:J2')
+
+    cup_names = [c for c, _, _ in COMPETITIONS if c not in ('Liga 1', 'Liga 2')]
+
+    # Season Results column letters (matches build_season_results layout):
+    # A=Season, B=Manager, C=Finish, D..=stats, then cups, then Outcome.
+    sr_first = 5
+    sr_last = 4 + SEASON_RESULTS_BLANK_ROWS
+    stats_first_col = 4  # D
+    stats_letters = [
+        get_column_letter(stats_first_col + i)
+        for i in range(len(SEASON_STATS_COLS))
+    ]
+    # stats map: W=D, D=E, L=F, GF=G, GA=H, YC=I, RC=J
+    sr = lambda col: f"'Season Results'!${col}${sr_first}:${col}${sr_last}"
+    sr_mgr = sr('B')
+    sr_fin = sr('C')
+    sr_w, sr_d, sr_l, sr_gf, sr_ga, sr_yc, sr_rc = (sr(c) for c in stats_letters)
+    first_cup_col_idx = stats_first_col + len(SEASON_STATS_COLS)
+    cup_letters = [get_column_letter(first_cup_col_idx + i) for i in range(len(cup_names))]
+    sr_cup_rngs = [sr(c) for c in cup_letters]
+    outcome_col_idx = first_cup_col_idx + len(cup_names)
+    sr_outcome = sr(get_column_letter(outcome_col_idx))
+
+    headers = [
+        'Manager', 'Team', 'League', 'Initial Tier',
+        'Seasons', 'Promoted', 'Relegated',
+        'Avg Finish', 'Best Finish', 'Worst Finish',
+        'W', 'D', 'L', 'GF', 'GA', 'GD', 'YC', 'RC',
+    ] + [f'{c} Titles' for c in cup_names] + ['Total Titles']
+
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=4, column=i, value=h)
+    head_row(ws, 4, len(headers))
+
+    first_title_col = 19  # S (column after RC)
+    total_titles_col = first_title_col + len(cup_names)
+
+    for idx, (name, team, league, tier) in enumerate(MANAGERS):
+        row = 5 + idx
+        mgr = f'$A{row}'
+        seasons_ref = f'E{row}'
+
+        ws.cell(row=row, column=1, value=name).alignment = LEFT
+        ws.cell(row=row, column=2, value=team).alignment = LEFT
+        ws.cell(row=row, column=3, value=league).alignment = CENTER
+        ws.cell(row=row, column=4, value=tier).alignment = CENTER
+
+        # Seasons Played
+        ws.cell(row=row, column=5,
+                value=f'=COUNTIF({sr_mgr},{mgr})').alignment = CENTER
+
+        # Promotions / Relegations
+        ws.cell(row=row, column=6,
+                value=f'=SUMPRODUCT(({sr_mgr}={mgr})*({sr_outcome}="Promoted"))'
+                ).alignment = CENTER
+        ws.cell(row=row, column=7,
+                value=f'=SUMPRODUCT(({sr_mgr}={mgr})*({sr_outcome}="Relegated"))'
+                ).alignment = CENTER
+
+        # Avg / Best / Worst Finish - blank when no seasons logged
+        avg_f = (
+            f'=IF({seasons_ref}=0,"",'
+            f'IFERROR(AVERAGEIFS({sr_fin},{sr_mgr},{mgr},{sr_fin},">0"),""))'
+        )
+        c = ws.cell(row=row, column=8, value=avg_f)
+        c.alignment = CENTER
+        c.number_format = '0.0'
+
+        best_f = (
+            f'=IF({seasons_ref}=0,"",'
+            f'IFERROR(_xlfn.MINIFS({sr_fin},{sr_mgr},{mgr},{sr_fin},">0"),""))'
+        )
+        ws.cell(row=row, column=9, value=best_f).alignment = CENTER
+
+        worst_f = (
+            f'=IF({seasons_ref}=0,"",'
+            f'IFERROR(_xlfn.MAXIFS({sr_fin},{sr_mgr},{mgr}),""))'
+        )
+        ws.cell(row=row, column=10, value=worst_f).alignment = CENTER
+
+        # W / D / L / GF / GA
+        stat_ranges = [sr_w, sr_d, sr_l, sr_gf, sr_ga]
+        for off, rng in enumerate(stat_ranges):
+            f = f'=IF({seasons_ref}=0,"",SUMIFS({rng},{sr_mgr},{mgr}))'
+            ws.cell(row=row, column=11 + off, value=f).alignment = CENTER
+
+        # GD = GF - GA (recomputed to avoid "" arithmetic)
+        gd_f = (
+            f'=IF({seasons_ref}=0,"",'
+            f'SUMIFS({sr_gf},{sr_mgr},{mgr})-SUMIFS({sr_ga},{sr_mgr},{mgr}))'
+        )
+        ws.cell(row=row, column=16, value=gd_f).alignment = CENTER
+
+        # YC / RC
+        ws.cell(row=row, column=17,
+                value=f'=IF({seasons_ref}=0,"",SUMIFS({sr_yc},{sr_mgr},{mgr}))'
+                ).alignment = CENTER
+        ws.cell(row=row, column=18,
+                value=f'=IF({seasons_ref}=0,"",SUMIFS({sr_rc},{sr_mgr},{mgr}))'
+                ).alignment = CENTER
+
+        # Titles per cup
+        for i, cup_rng in enumerate(sr_cup_rngs):
+            title_f = f'=SUMPRODUCT(({sr_mgr}={mgr})*({cup_rng}="Winner"))'
+            ws.cell(row=row, column=first_title_col + i,
+                    value=title_f).alignment = CENTER
+
+        # Total Titles = sum of per-cup title cells on this row
+        first_letter = get_column_letter(first_title_col)
+        last_letter = get_column_letter(first_title_col + len(cup_names) - 1)
+        ws.cell(row=row, column=total_titles_col,
+                value=f'=SUM({first_letter}{row}:{last_letter}{row})'
+                ).alignment = CENTER
+
+    # Auto-filter + freeze + widths
+    last_col_letter = get_column_letter(len(headers))
+    ws.auto_filter.ref = f"A4:{last_col_letter}{4 + len(MANAGERS)}"
+    ws.freeze_panes = 'B5'
+
+    widths = [14, 22, 8, 10, 9, 11, 11, 11, 12, 12]
+    widths += [6] * 8   # W, D, L, GF, GA, GD, YC, RC
+    widths += [13] * len(cup_names)
+    widths += [12]      # Total Titles
     for col, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = w
 
@@ -2648,6 +2811,9 @@ def main() -> int:
 
     print("Building Draft Order...")
     build_draft_order(wb.create_sheet('Draft Order'))
+
+    print("Building Career Summary...")
+    build_career_summary(wb.create_sheet('Career Summary'))
 
     print("Building Player Changes...")
     build_player_changes(wb.create_sheet('Player Changes'))
